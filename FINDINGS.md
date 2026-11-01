@@ -45,55 +45,90 @@ A first cut of the library is roughly: `Engines::discover()`, an async
 events into display text, and a capture `Tap` with node selectors and a
 lifecycle policy (follow, survive idle, end with the node).
 
-## Open questions for the grilling
+## Live decoding: why Parakeet stalls, and the methods
+
+- **Myna today (Parakeet, `SilenceCut`):** commits only at a pause once the
+  window is 15 s long (`SC_ARM_S`), or at a 60 s hard cut. Between cuts each
+  draft re-decodes the whole open window (0.2 s at 10 s, 2.4 s at 60 s),
+  throttled to half of real time (`PARTIAL_BUDGET`), so drafts slow as the
+  window grows. A fast talker who never pauses runs the window to 60 s.
+- **WhisperLive is no cheaper:** it re-decodes everything since the last
+  commit. It commits when Whisper splits the window into segments, or when the
+  output stays the same for 11 steps. Its caps (45 s trim, 25 s `clip_audio`)
+  drop audio without committing it.
+- **Methods that bound the cost of each step:**
+  1. **A bounded window with timestamp commits.** Decode a few seconds of
+     audio plus some audio before it for context. Commit the words that end
+     more than about 1.5 s before "now", by token time, then slide the window
+     up to them. This works with the shipped Parakeet TDT.
+  2. **A cache-aware streaming model** (Nemotron or FastConformer
+     cache-aware, a sherpa streaming transducer). The cost per step stays
+     constant, but it is a new model family to ship.
+
+## Decisions (grilling, 2026-11-01)
 
 Product
-
-1. Who is it for: deaf and hard-of-hearing users (accessibility, must be
-   reliable for hours), meeting notes, or language learners? It decides most
-   of what follows.
-2. Translation is the obvious next feature (caption French audio in
-   English). In scope, and on which model?
-3. Does the transcript persist (save to file, search) or is it ephemeral by
-   design? Privacy posture either way.
+- **Audience:** accessibility first (deaf and hard-of-hearing users). That
+  sets the bar for reliability over hours, readability and low flicker.
+- **Translation:** later. Reserve a target-language field in the API.
+- **Transcript:** ephemeral by default. There is a scrollback view and an
+  explicit "Save transcript" action.
 
 Capture
+- **Consent:** tap directly. The user's pick in our UI is the consent; no
+  portal.
+- **Following an app:** select by application and follow it. Tap every
+  output node it creates and mix them.
+- **Silence:** stay armed. Captions fade after a few seconds of silence, and
+  the session closes only when the user closes it.
+- **Microphone:** a source in v1, listed alongside the outputs.
 
-4. Per-app taps need no consent today. Is that acceptable for a
-   privacy-first project, or must selection go through the ScreenCast portal?
-5. What does "Firefox" mean when it spawns a node per media element? Follow
-   the application (`application.name` + pid) across nodes, or one node only?
-6. Pause and silence: keep the session open for 20 minutes of a paused
-   video, or end and restart?
-7. Microphone too (captioning a live conversation in the room)?
-
-Engine
-
-8. Parakeet's growing re-decode needs a forced commit for captions. Client
-   side (commit every N seconds or at a punctuation-stable prefix) or a
-   server-side caption mode? The server is the right owner.
-9. Non-speech: Whisper hallucinates over music. Gate on VAD client-side, or
-   rely on the server?
-10. Is a batch-only backend offered at all, or hidden?
-
-Overlay
-
-11. GNOME Wayland has no always-on-top. The prototype runs on XWayland
-    (EWMH above). Alternatives: the Shell extension draws it (transcript
-    crosses D-Bus into the compositor), or a picture-in-picture-style
-    request upstream. Which?
-12. Above fullscreen video? XWayland "above" loses to a fullscreen window.
-13. Click-through while not hovered, so it never blocks the video's controls?
-14. Revision display: dim tail (now), hold back unstable words, or
-    word-by-word fade-in? Rolling lines or YouTube-style paged cues?
-15. Multiple overlays at once (two calls), or one?
-16. Settings persistence: GSettings, and per-node remembered position?
+Engine and API
+- **Decoding methods:** build both the bounded window (1) and native
+  streaming (2), and make it easy to switch between methods from the UI.
+- **Wire API:** the app states an intent (dictation or captions) plus bounds
+  (latency, revision span, CPU share). The server advertises the methods the
+  loaded model supports in `session.created`, and an app may name one
+  explicitly. That gives the UI a method drop-down built from what the
+  backend reports.
+- **Dictation:** must not lose accuracy. The pause-cut loop stays its
+  default; the new methods are an advanced-settings choice.
+- **Non-speech gating:** done in the server as part of the method (VAD plus
+  the segment's no-speech score), advertised as a bound.
+- **Choosing an engine:** behind a seam. The app asks for a capability (say
+  `speech-to-text/live`) and gets the best model that provides it. Today a
+  resolver scans the installed Myna snaps and their advertised methods.
+  Later it is the Ubuntu platform's inference-snaps manager. Batch-only
+  backends never answer a live request.
 
 Library
+- **Language:** Rust crate first. Add a GObject layer only when Python or
+  GJS users appear.
+- **Scope:** engines, sessions, transcript assembly and capture (node, app,
+  mic and sink-monitor selectors, with fail-fast or stay-armed lifecycles).
+  Dictation's `myna-audio` capture moves onto it.
+- **Location:** the library lives in the Myna workspace. Myna Captions stays
+  its own repo and depends on it.
 
-17. Rust-only crate, or a C/GObject API so Python and GJS apps can use it?
-18. Does the library include capture, or only engines and transcripts, with
-    capture left to the app?
-19. Lives in the Myna repo (dictation migrates onto it) or separately?
-20. Packaging: snap (needs `audio-record` plus graph access to other apps'
-    nodes, which strict confinement may not allow), deb, or Flatpak?
+Overlay
+- **GNOME:** a separate Shell extension renders the captions, with its own
+  D-Bus contract for transcript text. myna-shell keeps its rule against
+  carrying transcript text. Elsewhere the overlay is a layer-shell or X11
+  window.
+- **Clicks:** pass through to whatever is underneath. A modifier or a handle
+  reveals move and resize.
+- **Multiple overlays:** one per source, each labelled.
+- **Revisions:** a user setting. Options are a dim tail (as now), holding
+  back unstable words, or committed text only.
+- **Packaging:** a deb in the Myna PPA, like Myna Settings, with the
+  extension alongside.
+
+## Still open
+
+- **Engine-selection seam:** its exact shape (D-Bus service, library trait,
+  or both), and who owns "best" (accuracy, latency, hardware).
+- **Settings:** stored in GSettings; whether position is remembered per
+  source.
+- **Above fullscreen video:** whether the Shell extension draws over it.
+- **Evaluation:** a caption-shaped corpus (fast continuous speech, music beds,
+  calls) to score commit latency, CPU and WER against batch for each method.
