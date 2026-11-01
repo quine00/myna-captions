@@ -1,0 +1,17 @@
+[package]
+name = "myna-captions"
+version = "0.0.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "Live captions for any PipeWire audio output, transcribed locally by a Myna inference backend."
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_6"] }
+gdk4-x11 = "0.11"
+x11rb = "0.13"
+tokio = { version = "1", features = ["rt", "net", "process", "io-util", "sync", "macros", "time"] }
+tokio-tungstenite = "0.29"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+serde_json = "1"
+async-channel = "2"
