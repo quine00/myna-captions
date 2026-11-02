@@ -22,6 +22,8 @@ use crate::nodes::{self, Kind};
 pub const SAMPLE_RATE: u32 = 16_000;
 /// 100 ms of mono S16LE.
 const CHUNK_BYTES: usize = SAMPLE_RATE as usize / 10 * 2;
+/// How long a stopped session waits for the backend's last words.
+const DRAIN: Duration = Duration::from_secs(5);
 /// How often a source with no node is looked for again.
 const FOLLOW_POLL: Duration = Duration::from_secs(1);
 
@@ -70,13 +72,17 @@ async fn stream(
     let (pcm_tx, mut pcm) = mpsc::channel::<Vec<u8>>(64);
     let capture = tokio::spawn(follow(spec.key.clone(), pcm_tx));
     let mut audio_open = true;
+    let drain = tokio::time::sleep(Duration::MAX);
+    tokio::pin!(drain);
     let result = loop {
         tokio::select! {
             _ = &mut stop, if audio_open => {
                 audio_open = false;
                 capture.abort();
                 commit(&mut tx).await?;
+                drain.as_mut().reset(tokio::time::Instant::now() + DRAIN);
             }
+            _ = &mut drain => break Ok(()),
             block = pcm.recv(), if audio_open => match block {
                 Some(block) => tx.send(Message::binary(block)).await.map_err(|e| e.to_string())?,
                 None => break Err("capture stopped".into()),
