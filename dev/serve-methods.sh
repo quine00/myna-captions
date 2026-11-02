@@ -4,10 +4,11 @@
 #
 #   dev/serve-methods.sh [method ...]     default: every method
 #
-# Methods: nemotron-onnx (English, Myna's torch-free adapter; the export
-# lives in NEMOTRON_DIR, see dev/nemotron/ in MYNA_TREE), nemotron-560,
-# nemotron-1120 (English under torch), nemotron35-560 (French and 17 more
-# locales; set the language in the app, or it detects), and parakeet-bounded
+# Methods: nemotron-onnx (English) and nemotron35-onnx (French and 17 more
+# locales; set the language in the app, or it detects), Myna's torch-free
+# adapter on the exports in NEMOTRON_DIR and NEMOTRON35_DIR (see dev/nemotron/
+# in MYNA_TREE); nemotron-560, nemotron-1120 and nemotron35-560, the same
+# models under torch; and parakeet-bounded
 #
 # MYNA_TREE is a Myna checkout carrying the captions-live branch (Parakeet's
 # bounded window and the Nemotron server). NEMO_VENV holds NeMo and torch,
@@ -26,10 +27,11 @@ HF=$HOME/.cache/huggingface/hub
 NEMO_MODEL=${NEMO_MODEL:-$(ls "$HF"/models--nvidia--nemotron-speech-streaming-en-0.6b/snapshots/*/*.nemo)}
 NEMO35_MODEL=${NEMO35_MODEL:-$(ls "$HF"/models--nvidia--nemotron-3.5-asr-streaming-0.6b/snapshots/*/*.nemo 2>/dev/null || true)}
 NEMOTRON_DIR=${NEMOTRON_DIR:-$HOME/.cache/myna/models/nemotron-en-rc6}
+NEMOTRON35_DIR=${NEMOTRON35_DIR:-$HOME/.cache/myna/models/nemotron35-rc6}
 DIR=${XDG_RUNTIME_DIR:?}/myna-captions
 mkdir -p "$DIR"
 methods=("$@")
-[ ${#methods[@]} -gt 0 ] || methods=(nemotron-onnx nemotron35-560 parakeet-bounded)
+[ ${#methods[@]} -gt 0 ] || methods=(nemotron-onnx nemotron35-onnx parakeet-bounded)
 
 pids=()
 cleanup() {
@@ -47,9 +49,12 @@ for m in "${methods[@]}"; do
             --stream-strategy local-agreement --stream-cadence-s 1 \
             --preload --socket "$DIR/$m.sock" &
         ;;
-    nemotron-onnx)
-        echo "Nemotron English, ONNX int8 (commits ~0.3 s)" > "$DIR/$m.label"
-        "$MYNA_TREE/server/.venv/bin/myna-server" --adapter nemotron --model "$NEMOTRON_DIR" \
+    nemotron-onnx | nemotron35-onnx)
+        dir=$NEMOTRON_DIR label="Nemotron English, ONNX int8 (commits ~0.3 s)"
+        [ "$m" = nemotron35-onnx ] && dir=$NEMOTRON35_DIR \
+            label="Nemotron multilingual 3.5, ONNX int8 (French and more)"
+        echo "$label" > "$DIR/$m.label"
+        "$MYNA_TREE/server/.venv/bin/myna-server" --adapter nemotron --model "$dir" \
             --preload --socket "$DIR/$m.sock" &
         ;;
     nemotron-1120 | nemotron-560)
