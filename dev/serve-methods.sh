@@ -54,7 +54,7 @@ for m in "${methods[@]}"; do
         [ "$m" = nemotron35-onnx ] && dir=$NEMOTRON35_DIR \
             label="Nemotron multilingual 3.5, ONNX int8 (French and more)"
         echo "$label" > "$DIR/$m.label"
-        "$MYNA_TREE/server/.venv/bin/myna-server" --adapter nemotron --model "$dir" \
+        "$MYNA_TREE/server/.venv/bin/myna-server" --adapter nemotron --streaming --model "$dir" \
             --preload --socket "$DIR/$m.sock" &
         ;;
     nemotron-1120 | nemotron-560)
