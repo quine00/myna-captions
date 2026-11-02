@@ -4,6 +4,7 @@
 //! height decides how many lines show.
 
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gtk::prelude::*;
@@ -34,6 +35,12 @@ impl Default for Style {
 
 /// Captions fade out once nothing new has been said for this long.
 const FADE_AFTER: Duration = Duration::from_secs(6);
+
+/// The chrome stays this long after the pointer leaves the overlay...
+const LINGER: Duration = Duration::from_secs(1);
+/// ...or this long after a press on the handle, time to reach the close
+/// button or the grip.
+const HOLD: Duration = Duration::from_secs(5);
 
 /// Height of the clear strip above the caption box that holds the handle.
 const HANDLE_STRIP: i32 = 28;
@@ -216,10 +223,10 @@ impl Caption {
 const CSS: &str = "
 window.myna-captions { background: none; }
 window.myna-captions .chrome { opacity: 0; transition: opacity 200ms; }
-window.myna-captions:hover .chrome { opacity: 1; }
+window.myna-captions.revealed .chrome { opacity: 1; }
 window.myna-captions .handle { padding: 2px 8px; border-radius: 6px; font-size: smaller; opacity: .45;
   transition: opacity 200ms; }
-window.myna-captions:hover .handle { opacity: 1; }
+window.myna-captions.revealed .handle { opacity: 1; }
 window.myna-captions .grip { min-width: 18px; min-height: 18px; margin: 4px;
   border-right: 3px solid alpha(white, .7); border-bottom: 3px solid alpha(white, .7);
   border-bottom-right-radius: 8px; }
@@ -238,7 +245,7 @@ pub fn install_css() {
 /// The overlay window around `caption`, and its handle: a pill naming the
 /// source, the one part that always takes the pointer, so the rest can let
 /// clicks through.
-pub fn window(app: &adw::Application, title: &str, caption: &Caption) -> (gtk::Window, gtk::Widget) {
+pub fn window(app: &adw::Application, title: &str, caption: &Caption) -> (gtk::Window, gtk::Widget, Rc<Reveal>) {
     let source = gtk::Box::builder()
         .spacing(6)
         .css_classes(["osd", "handle"])
@@ -310,5 +317,105 @@ pub fn window(app: &adw::Application, title: &str, caption: &Caption) -> (gtk::W
         Some(gtk::NamedAction::new("window.close")),
     ));
     window.add_controller(escape);
-    (window, source.upcast())
+    let reveal = Reveal::install(&window, source.upcast_ref());
+    (window, source.upcast(), reveal)
+}
+
+type Listener = Box<dyn Fn(bool)>;
+
+/// Whether the overlay shows its chrome (close button, grip) and takes
+/// input. It follows the pointer, but lingers after it leaves and holds
+/// after a press on the handle: crossing events around a click are not to
+/// be trusted, and the controls must outlast the trip to them.
+pub struct Reveal {
+    window: glib::WeakRef<gtk::Window>,
+    shown: Cell<bool>,
+    inside: Cell<bool>,
+    hold_until: Cell<Instant>,
+    timer: RefCell<Option<glib::SourceId>>,
+    listeners: RefCell<Vec<Listener>>,
+}
+
+impl Reveal {
+    fn install(window: &gtk::Window, handle: &gtk::Widget) -> Rc<Self> {
+        let reveal = Rc::new(Self {
+            window: window.downgrade(),
+            shown: Cell::new(false),
+            inside: Cell::new(false),
+            hold_until: Cell::new(Instant::now()),
+            timer: RefCell::default(),
+            listeners: RefCell::default(),
+        });
+        let motion = gtk::EventControllerMotion::new();
+        motion.connect_enter(glib::clone!(#[weak] reveal, move |_, _, _| reveal.pointer(true)));
+        motion.connect_motion(glib::clone!(#[weak] reveal, move |_, _, _| reveal.pointer(true)));
+        motion.connect_leave(glib::clone!(#[weak] reveal, move |_| reveal.pointer(false)));
+        window.add_controller(motion);
+        // Capture phase: the drag gesture claims the press.
+        let press = gtk::EventControllerLegacy::new();
+        press.set_propagation_phase(gtk::PropagationPhase::Capture);
+        press.connect_event(glib::clone!(#[weak] reveal, #[upgrade_or] glib::Propagation::Proceed, move |_, event| {
+            if matches!(event.event_type(), gdk::EventType::ButtonPress | gdk::EventType::ButtonRelease) {
+                reveal.hold();
+            }
+            glib::Propagation::Proceed
+        }));
+        handle.add_controller(press);
+        reveal
+    }
+
+    /// Calls `f` with every change, and now with the current state.
+    pub fn connect(&self, f: impl Fn(bool) + 'static) {
+        f(self.shown.get());
+        self.listeners.borrow_mut().push(Box::new(f));
+    }
+
+    fn pointer(self: &Rc<Self>, inside: bool) {
+        if inside {
+            self.inside.set(true);
+            self.cancel();
+            self.set(true);
+        } else if self.inside.replace(false) {
+            self.conceal_later();
+        }
+    }
+
+    fn hold(self: &Rc<Self>) {
+        self.hold_until.set(Instant::now() + HOLD);
+        self.set(true);
+        self.conceal_later();
+    }
+
+    fn conceal_later(self: &Rc<Self>) {
+        self.cancel();
+        let wait = self.hold_until.get().saturating_duration_since(Instant::now()).max(LINGER);
+        let weak = Rc::downgrade(self);
+        let id = glib::timeout_add_local_once(wait, move || {
+            let Some(reveal) = weak.upgrade() else { return };
+            reveal.timer.take();
+            if !reveal.inside.get() {
+                reveal.set(false);
+            }
+        });
+        self.timer.replace(Some(id));
+    }
+
+    fn cancel(&self) {
+        if let Some(id) = self.timer.take() {
+            id.remove();
+        }
+    }
+
+    fn set(&self, shown: bool) {
+        if shown == self.shown.get() {
+            return;
+        }
+        self.shown.set(shown);
+        if let Some(window) = self.window.upgrade() {
+            if shown { window.add_css_class("revealed") } else { window.remove_css_class("revealed") }
+        }
+        for f in self.listeners.borrow().iter() {
+            f(shown);
+        }
+    }
 }

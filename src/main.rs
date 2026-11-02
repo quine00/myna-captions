@@ -311,9 +311,9 @@ impl App {
         };
 
         let caption = Caption::new(self.style.borrow().clone());
-        let (window, handle) = overlay::window(&application, &node.title, &caption);
+        let (window, handle, reveal) = overlay::window(&application, &node.title, &caption);
         if self.x11 {
-            above::install(&window, &handle);
+            above::install(&window, &handle, &reveal);
         }
 
         let (events_tx, events_rx) = async_channel::unbounded();

@@ -3,9 +3,9 @@
 //! GNOME Wayland gives no client a way to stay on top, so the app runs on
 //! XWayland unless told otherwise (`--wayland`) and asks the window manager
 //! here. Clicks pass through the overlay to whatever is under it (video
-//! controls, a call's buttons), except on its handle; pointing at the handle
-//! makes the whole overlay take input until the pointer leaves it, so it can
-//! be dragged, resized or closed.
+//! controls, a call's buttons), except on its handle; while the overlay is
+//! revealed (`overlay::Reveal`) the whole of it takes input, so it can be
+//! dragged, resized or closed.
 //!
 //! Only the input region and ordinary crossing events are relied on: an X
 //! client under XWayland learns nothing of the pointer or the modifiers
@@ -23,8 +23,8 @@ const ADD: u32 = 1;
 
 type Error = Box<dyn std::error::Error>;
 
-pub fn install(window: &gtk::Window, handle: &gtk::Widget) {
-    let handle = handle.clone();
+pub fn install(window: &gtk::Window, handle: &gtk::Widget, reveal: &std::rc::Rc<crate::overlay::Reveal>) {
+    let (handle, reveal) = (handle.clone(), reveal.clone());
     window.connect_map(move |window| {
         let Some(surface) = window.surface().and_downcast::<gdk4_x11::X11Surface>() else { return };
         let x11 = match X11::connect(surface.xid() as u32) {
@@ -75,11 +75,9 @@ pub fn install(window: &gtk::Window, handle: &gtk::Widget) {
             });
             window.add_controller(legacy);
         }
-        let motion = gtk::EventControllerMotion::new();
-        motion.connect_contains_pointer_notify(move |motion| {
-            apply(motion.contains_pointer());
+        reveal.connect(move |shown| {
+            apply(shown);
         });
-        window.add_controller(motion);
     });
 }
 
