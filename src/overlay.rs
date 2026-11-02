@@ -163,11 +163,7 @@ impl Caption {
         self.update_property(&[gtk::accessible::Property::Label(&text)]);
         imp.text.replace(text);
         imp.stable.set(stable);
-        imp.changed.set(Instant::now());
-        if let Some(fade) = imp.fade.take() {
-            fade.reset();
-        }
-        self.set_opacity(1.0);
+        self.wake();
         self.queue_draw();
     }
 
@@ -187,9 +183,23 @@ impl Caption {
         imp.fade.replace(Some(fade));
     }
 
+    /// Restyle, and show the result: a caption faded for quiet would
+    /// otherwise take the change invisibly, which reads as ignored.
     pub fn set_style(&self, style: Style) {
         self.imp().style.replace(style);
+        self.wake();
         self.queue_resize();
+        self.queue_draw();
+    }
+
+    /// Bring a faded caption back for another quiet spell.
+    fn wake(&self) {
+        let imp = self.imp();
+        imp.changed.set(Instant::now());
+        if let Some(fade) = imp.fade.take() {
+            fade.reset();
+        }
+        self.set_opacity(1.0);
     }
 
     pub fn lines(&self) -> i32 {
@@ -290,7 +300,9 @@ pub fn window(app: &adw::Application, title: &str, caption: &Caption) -> (gtk::W
     overlay.add_overlay(&source);
     overlay.add_overlay(&close);
     overlay.add_overlay(&grip);
-    window.set_child(Some(&gtk::WindowHandle::builder().child(&overlay).build()));
+    // Moving is the handle's alone (above.rs): gtk::WindowHandle's window-manager
+    // move does nothing for this XWayland window under Mutter.
+    window.set_child(Some(&overlay));
 
     let escape = gtk::ShortcutController::new();
     escape.add_shortcut(gtk::Shortcut::new(
