@@ -15,7 +15,7 @@
 use gtk::prelude::*;
 use x11rb::connection::Connection;
 use x11rb::protocol::shape::{ConnectionExt as _, SK, SO};
-use x11rb::protocol::xproto::{ClientMessageEvent, ClipOrdering, ConnectionExt, EventMask, Rectangle};
+use x11rb::protocol::xproto::{ClientMessageEvent, ClipOrdering, ConfigureWindowAux, ConnectionExt, EventMask, Rectangle};
 use x11rb::rust_connection::RustConnection;
 
 /// `_NET_WM_STATE_ADD`.
@@ -37,27 +37,69 @@ pub fn install(window: &gtk::Window, handle: &gtk::Widget) {
         if let Err(e) = x11.keep_above() {
             eprintln!("myna-captions: cannot keep the overlay above: {e}");
         }
+        // Whether the region was set: not before the handle is laid out.
         let apply = {
             let (x11, window, handle) = (x11.clone(), window.downgrade(), handle.downgrade());
-            move |interactive: bool| {
-                let (Some(window), Some(handle)) = (window.upgrade(), handle.upgrade()) else { return };
-                let region = if interactive { None } else { handle_rect(&window, &handle) };
+            move |interactive: bool| -> bool {
+                let (Some(window), Some(handle)) = (window.upgrade(), handle.upgrade()) else { return true };
+                let region = if interactive {
+                    None
+                } else {
+                    match handle_rect(&window, &handle) {
+                        Some(rect) => Some(rect),
+                        None => return false,
+                    }
+                };
+                trace(&format!("input {:?}", region.map(|r| (r.x, r.y, r.width, r.height))));
                 if let Err(e) = x11.set_input(region) {
                     eprintln!("myna-captions: cannot set the overlay's input region: {e}");
                 }
+                true
             }
         };
-        // GTK lays the handle out after the map; claim the region once it has.
+        // Claim the region on the first frame the handle has a size in.
         let initial = apply.clone();
-        gtk::glib::idle_add_local_once(move || initial(false));
+        window.add_tick_callback(move |_, _| {
+            if initial(false) { gtk::glib::ControlFlow::Break } else { gtk::glib::ControlFlow::Continue }
+        });
+        x11.drag_from(&handle);
+        if tracing() {
+            let legacy = gtk::EventControllerLegacy::new();
+            legacy.set_propagation_phase(gtk::PropagationPhase::Capture);
+            legacy.connect_event(|_, event| {
+                use gtk::gdk::EventType::*;
+                if matches!(event.event_type(), ButtonPress | ButtonRelease | EnterNotify | LeaveNotify) {
+                    trace(&format!("{:?} at {:?}", event.event_type(), event.position()));
+                }
+                gtk::glib::Propagation::Proceed
+            });
+            window.add_controller(legacy);
+        }
         let motion = gtk::EventControllerMotion::new();
-        motion.connect_contains_pointer_notify(move |motion| apply(motion.contains_pointer()));
+        motion.connect_contains_pointer_notify(move |motion| {
+            apply(motion.contains_pointer());
+        });
         window.add_controller(motion);
     });
 }
 
+fn tracing() -> bool {
+    std::env::var_os("MYNA_CAPTIONS_TRACE").is_some()
+}
+
+/// Overlay pointer diagnostics, under `MYNA_CAPTIONS_TRACE`.
+fn trace(what: &str) {
+    if tracing() {
+        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+        eprintln!("{:.2} overlay {what}", t.as_secs_f64() % 1000.0);
+    }
+}
+
 /// The handle's box in the window's X pixels.
 fn handle_rect(window: &gtk::Window, handle: &gtk::Widget) -> Option<Rectangle> {
+    if handle.width() < 1 || handle.height() < 1 {
+        return None; // not laid out yet
+    }
     let bounds = handle.compute_bounds(window)?;
     let scale = window.scale_factor() as f32;
     Some(Rectangle {
@@ -96,6 +138,49 @@ impl X11 {
             let event = ClientMessageEvent::new(32, self.window, state, [ADD, first, second, 1, 0]);
             self.conn.send_event(false, self.root, mask, event)?;
         }
+        self.conn.flush()?;
+        Ok(())
+    }
+
+    /// Move the window with drags on `handle`, by configuring it ourselves:
+    /// under Mutter an XWayland window's `_NET_WM_MOVERESIZE` request (what
+    /// GTK's begin_move sends) moved nothing, measured in a nested Shell.
+    /// The button's implicit grab keeps the pointer reported to us while it
+    /// is held, wherever it goes.
+    fn drag_from(self: &std::rc::Rc<Self>, handle: &gtk::Widget) {
+        let drag = gtk::GestureDrag::new();
+        let start = std::rc::Rc::new(std::cell::Cell::new(None::<(i32, i32, i32, i32)>));
+        drag.connect_drag_begin({
+            let (x11, start) = (self.clone(), start.clone());
+            move |gesture, _, _| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                start.set(x11.origin_and_pointer().ok());
+                trace(&format!("drag from {:?}", start.get()));
+            }
+        });
+        drag.connect_drag_update({
+            let (x11, start) = (self.clone(), start.clone());
+            move |_, _, _| {
+                let Some((wx, wy, px, py)) = start.get() else { return };
+                if let Ok((_, _, nx, ny)) = x11.origin_and_pointer() {
+                    let r = x11.move_to(wx + nx - px, wy + ny - py);
+                    trace(&format!("drag to {},{} {r:?}", wx + nx - px, wy + ny - py));
+                }
+            }
+        });
+        drag.connect_drag_end(move |_, _, _| start.set(None));
+        handle.add_controller(drag);
+    }
+
+    /// The window's frame origin and the pointer, in root coordinates.
+    fn origin_and_pointer(&self) -> Result<(i32, i32, i32, i32), Error> {
+        let pointer = self.conn.query_pointer(self.root)?.reply()?;
+        let origin = self.conn.translate_coordinates(self.window, self.root, 0, 0)?.reply()?;
+        Ok((origin.dst_x.into(), origin.dst_y.into(), pointer.root_x.into(), pointer.root_y.into()))
+    }
+
+    fn move_to(&self, x: i32, y: i32) -> Result<(), Error> {
+        self.conn.configure_window(self.window, &ConfigureWindowAux::new().x(x).y(y))?;
         self.conn.flush()?;
         Ok(())
     }
