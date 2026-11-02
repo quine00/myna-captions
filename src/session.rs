@@ -1,24 +1,29 @@
-//! One caption session: `pw-record` taps a node, its PCM streams to a Myna
-//! backend over the IE115 wire, and the transcription frames come back as
-//! [`Event`]s. The session never commits on its own: the backend decides
-//! where utterances end, and the stream runs until the node goes away or the
-//! caller stops it.
+//! One caption session: `pw-record` taps a source, its PCM streams to a
+//! Myna backend over the IE115 wire, and the transcription frames come back
+//! as [`Event`]s. The session never commits on its own: the backend decides
+//! where utterances end. A source whose node goes away (a tab closed, the
+//! next track) is followed to its next node, and the session stays armed
+//! meanwhile; only the caller ends it.
 
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::io::AsyncReadExt;
 use tokio::net::UnixStream;
 use tokio::process::Command;
+use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::nodes::Kind;
+use crate::nodes::{self, Kind};
 
 pub const SAMPLE_RATE: u32 = 16_000;
 /// 100 ms of mono S16LE.
 const CHUNK_BYTES: usize = SAMPLE_RATE as usize / 10 * 2;
+/// How often a source with no node is looked for again.
+const FOLLOW_POLL: Duration = Duration::from_secs(1);
 
 #[derive(Debug)]
 pub enum Event {
@@ -31,18 +36,17 @@ pub enum Event {
 
 pub struct Spec {
     pub socket: PathBuf,
-    pub serial: u64,
-    pub kind: Kind,
+    pub key: String,
     pub language: Option<String>,
 }
 
-/// Run the session until `stop` fires or either end goes away.
+/// Run the session until `stop` fires or the backend goes away.
 pub async fn run(spec: Spec, events: async_channel::Sender<Event>, stop: tokio::sync::oneshot::Receiver<()>) {
-    eprintln!("myna-captions: captioning node {} through {}", spec.serial, spec.socket.display());
+    eprintln!("myna-captions: captioning {} through {}", spec.key, spec.socket.display());
     let result = stream(&spec, &events, stop).await;
     match &result {
-        Ok(()) => eprintln!("myna-captions: node {} finished", spec.serial),
-        Err(e) => eprintln!("myna-captions: node {} failed: {e}", spec.serial),
+        Ok(()) => eprintln!("myna-captions: {} finished", spec.key),
+        Err(e) => eprintln!("myna-captions: {} failed: {e}", spec.key),
     }
     let _ = events.send(Event::Ended(result.err())).await;
 }
@@ -52,9 +56,6 @@ async fn stream(
     events: &async_channel::Sender<Event>,
     mut stop: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<(), String> {
-    let mut recorder = record(spec)?;
-    let mut pcm = recorder.stdout.take().ok_or("pw-record has no stdout")?;
-
     let socket = UnixStream::connect(&spec.socket)
         .await
         .map_err(|e| format!("{}: {e}", spec.socket.display()))?;
@@ -66,46 +67,81 @@ async fn stream(
         .await
         .map_err(|e| e.to_string())?;
 
-    let mut buf = vec![0u8; CHUNK_BYTES];
+    let (pcm_tx, mut pcm) = mpsc::channel::<Vec<u8>>(64);
+    let capture = tokio::spawn(follow(spec.key.clone(), pcm_tx));
     let mut audio_open = true;
-    loop {
+    let result = loop {
         tokio::select! {
             _ = &mut stop, if audio_open => {
                 audio_open = false;
-                let _ = recorder.start_kill();
+                capture.abort();
                 commit(&mut tx).await?;
             }
-            read = pcm.read(&mut buf), if audio_open => match read {
-                Ok(0) | Err(_) => {
-                    audio_open = false;
-                    commit(&mut tx).await?;
-                }
-                Ok(n) => tx.send(Message::binary(buf[..n].to_vec())).await.map_err(|e| e.to_string())?,
+            block = pcm.recv(), if audio_open => match block {
+                Some(block) => tx.send(Message::binary(block)).await.map_err(|e| e.to_string())?,
+                None => break Err("capture stopped".into()),
             },
             frame = rx.next() => match frame {
                 Some(Ok(Message::Text(text))) => {
                     if let Some(done) = dispatch(&text, events).await? {
                         if !audio_open && done {
-                            return Ok(());
+                            break Ok(());
                         }
                     }
                 }
                 Some(Ok(_)) => {}
-                Some(Err(e)) => return Err(e.to_string()),
-                None => return if audio_open { Err("the backend closed the connection".into()) } else { Ok(()) },
+                Some(Err(e)) => break Err(e.to_string()),
+                None => break if audio_open { Err("the backend closed the connection".into()) } else { Ok(()) },
             },
         }
+    };
+    capture.abort();
+    result
+}
+
+/// Tap whichever node `key` resolves to, again each time it goes away.
+async fn follow(key: String, pcm: mpsc::Sender<Vec<u8>>) {
+    loop {
+        let found = tokio::task::spawn_blocking({
+            let key = key.clone();
+            move || nodes::resolve(&nodes::list(), &key)
+        })
+        .await
+        .ok()
+        .flatten();
+        let Some(node) = found else {
+            tokio::time::sleep(FOLLOW_POLL).await;
+            continue;
+        };
+        let Ok(mut recorder) = record(node.serial, &node.kind) else {
+            tokio::time::sleep(FOLLOW_POLL).await;
+            continue;
+        };
+        let Some(mut out) = recorder.stdout.take() else { continue };
+        let mut buf = vec![0u8; CHUNK_BYTES];
+        loop {
+            match out.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if pcm.send(buf[..n].to_vec()).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+        let _ = recorder.kill().await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }
 
-fn record(spec: &Spec) -> Result<tokio::process::Child, String> {
+fn record(serial: u64, kind: &Kind) -> Result<tokio::process::Child, String> {
     let mut command = Command::new("pw-record");
     command
-        .args(["--target", &spec.serial.to_string()])
+        .args(["--target", &serial.to_string()])
         .args(["--rate", &SAMPLE_RATE.to_string(), "--channels", "1", "--format", "s16"])
         .args(["--media-category", "Capture", "--media-role", "Accessibility"]);
     let mut props = String::from("{ node.dont-reconnect=true node.name=myna-captions node.description=\"Myna Captions\"");
-    if spec.kind == Kind::Sink {
+    if *kind == Kind::Sink {
         props.push_str(" stream.capture.sink=true");
     }
     props.push_str(" }");
@@ -170,19 +206,41 @@ fn parse(text: &str) -> Result<Option<Event>, String> {
     })
 }
 
-/// The inference sockets installed Myna backends provide, best first.
+/// The engines to offer, best first: caption methods served locally under
+/// `$XDG_RUNTIME_DIR/myna-captions/` (each `NAME.sock` labelled by an
+/// optional `NAME.label`), then the installed Myna backend snaps.
 pub fn backends() -> Vec<(String, PathBuf)> {
-    let Ok(dirs) = std::fs::read_dir("/var/snap") else { return Vec::new() };
-    let mut found: Vec<(String, PathBuf)> = dirs
+    let mut found = Vec::new();
+    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").map(|d| PathBuf::from(d).join("myna-captions")) {
+        let mut local: Vec<(String, PathBuf)> = std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|e| e == "sock"))
+            .map(|socket| {
+                let label = std::fs::read_to_string(socket.with_extension("label"))
+                    .map(|l| l.trim().to_owned())
+                    .unwrap_or_else(|_| socket.file_stem().unwrap_or_default().to_string_lossy().into_owned());
+                (label, socket)
+            })
+            .collect();
+        local.sort();
+        found.extend(local);
+    }
+    let mut snaps: Vec<(String, PathBuf)> = std::fs::read_dir("/var/snap")
+        .into_iter()
+        .flatten()
         .flatten()
         .filter_map(|dir| {
             let socket = dir.path().join("common/share/provider/myna.sock");
             socket.exists().then(|| (dir.file_name().to_string_lossy().into_owned(), socket))
         })
         .collect();
-    // Parakeet is the one family that streams out of the box; the others
+    // Parakeet is the one snap that streams out of the box; the others
     // answer only at the end of the audio, which for captions is never.
-    found.sort_by_key(|(name, _)| (name != "myna-parakeet", name.clone()));
+    snaps.sort_by_key(|(name, _)| (name != "myna-parakeet", name.clone()));
+    found.extend(snaps);
     found
 }
 
