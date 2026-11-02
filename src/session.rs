@@ -151,6 +151,18 @@ fn record(serial: u64, kind: &Kind) -> Result<tokio::process::Child, String> {
         props.push_str(" stream.capture.sink=true");
     }
     props.push_str(" }");
+    // The kernel ends the tap with the app, however the app ends: dropping
+    // the child only covers an orderly exit, and an orphaned pw-record
+    // would go on capturing.
+    // SAFETY: prctl is async-signal-safe and touches only this process.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
     command
         .args(["-P", &props, "-"])
         .stdout(Stdio::piped())

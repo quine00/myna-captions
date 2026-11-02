@@ -675,6 +675,7 @@ dependencies = [
  "gdk4-x11",
  "gtk4",
  "libadwaita",
+ "libc",
  "serde_json",
  "tokio",
  "tokio-tungstenite",
