@@ -1,9 +1,85 @@
 # Findings
 
-What the 2026-11-01 prototype established, what it copied out of Myna (the
+What the 2026-11-01/02 prototype established, what it copied out of Myna (the
 seed of a reusable library), and the questions still to settle. The parked
 2026-08-25 design (`~/captioning-client.md`) is the earlier thinking; where it
 conflicts with this file, this file has been measured.
+
+## Overnight feasibility run (2026-11-02)
+
+Question: can live captions feel snappy and accurate on this laptop?
+**Yes, with a streaming model.** Nemotron (NVIDIA's cache-aware streaming
+English model) commits every word within about a second, never rewrites
+one, and is as accurate as Parakeet in batch.
+
+Two clips, played in real time and scored against human references:
+`nogaps` (5 min of LibriSpeech readings butted together, a talker who never
+pauses) and `alestro` (6 min of a TV episode with music and crosstalk,
+scored against its own human subtitles, which are edited and so put a ~10%
+floor under every engine).
+
+| clip | method | WER | commit delay p50 / p90 / max | first shown p50 | draft rewrites/min | CPU s per audio s |
+|---|---|---|---|---|---|---|
+| nogaps | Parakeet batch (reference) | 6.1% | - | - | - | - |
+| nogaps | Parakeet shipped (pause cuts) | 12.2% | 36.8 / 59.6 / 70.0 s | 3.5 s | 361 | 1.79 |
+| nogaps | Parakeet bounded, 1 s ticks | 8.2% | 3.2 / 9.2 / 20.3 s | 0.6 s | 188 | 1.24 |
+| nogaps | Parakeet bounded, 0.5 s ticks | 12.5% | 1.7 / 4.7 / 14.5 s | 0.4 s | 121 | 1.86 |
+| nogaps | **Nemotron, 1.12 s chunks** | **3.7%** | **0.9 / 1.3 / 1.8 s** | 0.9 s | **0** | 1.40 |
+| nogaps | **Nemotron, 0.56 s chunks** | **3.7%** | **0.5 / 0.9 / 1.3 s** | 0.6 s | **0** | 2.34 |
+| alestro | Parakeet batch (reference) | 10.7% | - | - | - | - |
+| alestro | Parakeet shipped (pause cuts) | 9.6% | 24.0 / 53.1 / 66.5 s | 1.8 s | 751 | 1.40 |
+| alestro | Parakeet bounded, 1 s ticks | 11.4% | 3.6 / 12.2 / 19.3 s | 0.6 s | 338 | 0.96 |
+| alestro | Parakeet bounded, 0.5 s ticks | 16.4% | 1.5 / 3.6 / 18.8 s | 0.3 s | 250 | 1.26 |
+| alestro | **Nemotron, 1.12 s chunks** | 12.2% | **0.9 / 1.4 / 1.9 s** | 0.9 s | **0** | 1.40 |
+| alestro | **Nemotron, 0.56 s chunks** | 11.0% | **0.6 / 0.9 / 1.3 s** | 0.6 s | **0** | 2.35 |
+
+How to read it:
+
+- **Shipped Parakeet fails as captions.** Pause-free speech waits up to 70 s
+  for a commit, and it doubles WER there: the 60 s hard cut decodes long
+  windows that drop whole stretches (80 deletions against Nemotron's 3).
+- **The bounded window fixes the delay but not the feel.** Commits arrive
+  about 10x sooner and pause-free WER drops to 8.2%, but drafts still churn
+  (190-340 rewrites/min), and the 0.5 s cadence costs accuracy.
+- **Nemotron is the method.** Every word is final when shown, so the
+  "words still being worked out" setting is moot for it. On TV it trails
+  shipped Parakeet by 1.4-2.6 points; the gap is mostly verbatim fillers
+  ("uh", "um") the subtitlers dropped, not hallucination over music
+  (insertions 47 against Parakeet's 40).
+- **Its cost is the open problem.** fp32 torch takes 1.4 cores at 1.12 s
+  chunks and 2.3 at 0.56 s. The 2026-09-17 evaluation of its multilingual
+  sibling measured 14.9x real-time headroom for an int8 ONNX export on 4
+  threads (`myna/server/.kb/model-evaluation.md`), so shipping means that
+  export plus a torch-free loop, as Parakeet has.
+
+Caveats: one run per cell; another session's builds shared the machine for
+part of the night, so CPU and latency carry some noise, not enough to move
+the ranking. The harness, clips recipe and scorer are on Myna's
+`captions-live` branch under `dev/captions_eval/`.
+
+### Seen but not fixed
+
+- **Nemotron's punctuation is sparse** on conversational speech: captions
+  read as run-on text. A punctuation pass (the cached sherpa online punct
+  model) or a model that punctuates is the fix to try.
+- **Parakeet's bounded window can drop words at the commit/draft seam**:
+  once on screen, "anything for | And after" lost "a customer". Not chased,
+  since Nemotron is the pick.
+- **CPU per caption is high for an always-on feature** until the ONNX port.
+
+### What the prototype does now
+
+- Engines: `dev/serve-methods.sh` serves Nemotron (0.56 s and 1.12 s) and
+  Parakeet's bounded window on sockets the app lists under **Method**,
+  fastest first; installed Myna snaps follow.
+- Sources: applications (followed across their nodes), microphones, and
+  output devices.
+- Overlay: kept above other windows (XWayland), clicks pass through unless
+  Ctrl is held, fades after 6 s of quiet, labelled with its source.
+- Verified end to end overnight on a private X display: a TV clip played
+  through PipeWire, tapped from the player's stream, captioned by each
+  method; click-through, fade and Ctrl-to-close checked by driving the
+  pointer.
 
 ## Measured
 
@@ -23,9 +99,9 @@ conflicts with this file, this file has been measured.
   sessions in parallel kept identical cadence (first delta 2.2 s, terminal
   14.4 s). Captions and dictation can share a backend, CPU permitting.
   Longer sessions and dictation latency under load are unmeasured.
-- **A new node per track ends the session.** `pw-play` (and Firefox, per
-  media element) creates a fresh node for each item, and
-  `node.dont-reconnect` ends the capture with it.
+- **A new node per track ended the session** (fixed 2026-11-02): `pw-play`
+  (and Firefox, per media element) creates a fresh node for each item. A
+  source is now the application, re-resolved to its next node.
 
 ## Copied from Myna: the library candidates
 
