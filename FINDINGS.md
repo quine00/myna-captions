@@ -32,6 +32,10 @@ floor under every engine).
 | alestro | Parakeet bounded, 0.5 s ticks | 16.4% | 1.5 / 3.6 / 18.8 s | 0.3 s | 250 | 1.26 |
 | alestro | **Nemotron, 1.12 s chunks** | 12.2% | **0.9 / 1.4 / 1.9 s** | 0.9 s | **0** | 1.40 |
 | alestro | **Nemotron, 0.56 s chunks** | 11.0% | **0.6 / 0.9 / 1.3 s** | 0.6 s | **0** | 2.35 |
+| nogaps | Nemotron int8, 2 threads, 1.12 s | 3.0% | 0.7 / 1.2 / 1.7 s | 0.7 s | 0 | **0.43** |
+| nogaps | Nemotron int8, 2 threads, 0.56 s | 3.7% | **0.3 / 0.7 / 1.0 s** | 0.4 s | 0 | **0.51** |
+| alestro | Nemotron int8, 2 threads, 1.12 s | 11.8% | 0.7 / 1.2 / 1.8 s | 0.7 s | 0 | **0.42** |
+| alestro | Nemotron int8, 2 threads, 0.56 s | 11.3% | **0.4 / 0.7 / 1.2 s** | 0.4 s | 0 | **0.50** |
 
 How to read it:
 
@@ -46,11 +50,13 @@ How to read it:
   shipped Parakeet by 1.4-2.6 points; the gap is mostly verbatim fillers
   ("uh", "um") the subtitlers dropped, not hallucination over music
   (insertions 47 against Parakeet's 40).
-- **Its cost is the open problem.** fp32 torch takes 1.4 cores at 1.12 s
-  chunks and 2.3 at 0.56 s. The 2026-09-17 evaluation of its multilingual
-  sibling measured 14.9x real-time headroom for an int8 ONNX export on 4
-  threads (`myna/server/.kb/model-evaluation.md`), so shipping means that
-  export plus a torch-free loop, as Parakeet has.
+- **Its cost is half a core.** fp32 torch on 4 threads took 1.4-2.3
+  cores, mostly spinning. Dynamic int8 on the encoder's Linear layers, on 2
+  threads, takes 0.42-0.51 and commits sooner, with word-identical output on
+  a 60 s check. An int8 ONNX export with a torch-free loop (as Parakeet
+  has; the multilingual sibling measured 14.9x real-time headroom that way,
+  `myna/server/.kb/model-evaluation.md`) is still the shipping route, since
+  torch has no place in a snap, but cost no longer blocks the product.
 
 Caveats: one run per cell; another session's builds shared the machine for
 part of the night, so CPU and latency carry some noise, not enough to move
@@ -65,7 +71,6 @@ the ranking. The harness, clips recipe and scorer are on Myna's
 - **Parakeet's bounded window can drop words at the commit/draft seam**:
   once on screen, "anything for | And after" lost "a customer". Not chased,
   since Nemotron is the pick.
-- **CPU per caption is high for an always-on feature** until the ONNX port.
 
 ### What the prototype does now
 
@@ -74,12 +79,17 @@ the ranking. The harness, clips recipe and scorer are on Myna's
   fastest first; installed Myna snaps follow.
 - Sources: applications (followed across their nodes), microphones, and
   output devices.
-- Overlay: kept above other windows (XWayland), clicks pass through unless
-  Ctrl is held, fades after 6 s of quiet, labelled with its source.
+- Overlay: kept above other windows (XWayland), fades after 6 s of quiet.
+  Clicks pass through except on a pill naming the source; pointing at it
+  wakes the whole overlay (move, resize, close). A held-Ctrl design was
+  built first and dropped: under XWayland an X client cannot see the
+  pointer or modifiers while the pointer is over a Wayland window.
+  **Unverified on the real GNOME session** (tested on Xvfb only): the
+  first thing to check.
 - Verified end to end overnight on a private X display: a TV clip played
   through PipeWire, tapped from the player's stream, captioned by each
-  method; click-through, fade and Ctrl-to-close checked by driving the
-  pointer.
+  method; click-through, the pill, fade and close checked by driving the
+  pointer; a SIGKILLed app takes its pw-record tap with it.
 
 ## Measured
 
