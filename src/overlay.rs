@@ -4,8 +4,10 @@
 //! height decides how many lines show.
 
 use std::cell::{Cell, RefCell};
+use std::time::{Duration, Instant};
 
 use gtk::prelude::*;
+use adw::prelude::AnimationExt;
 use gtk::subclass::prelude::*;
 use gtk::{gdk, glib, graphene, gsk, pango};
 
@@ -30,6 +32,9 @@ impl Default for Style {
     }
 }
 
+/// Captions fade out once nothing new has been said for this long.
+const FADE_AFTER: Duration = Duration::from_secs(6);
+
 const PAD_H: f32 = 24.0;
 const PAD_V: f32 = 14.0;
 const RADIUS: f32 = 14.0;
@@ -37,11 +42,24 @@ const RADIUS: f32 = 14.0;
 mod imp {
     use super::*;
 
-    #[derive(Default)]
     pub struct Caption {
         pub text: RefCell<String>,
         pub stable: Cell<usize>,
         pub style: RefCell<Style>,
+        pub changed: Cell<Instant>,
+        pub fade: RefCell<Option<adw::TimedAnimation>>,
+    }
+
+    impl Default for Caption {
+        fn default() -> Self {
+            Self {
+                text: RefCell::default(),
+                stable: Cell::default(),
+                style: RefCell::default(),
+                changed: Cell::new(Instant::now()),
+                fade: RefCell::default(),
+            }
+        }
     }
 
     #[glib::object_subclass]
@@ -51,7 +69,19 @@ mod imp {
         type ParentType = gtk::Widget;
     }
 
-    impl ObjectImpl for Caption {}
+    impl ObjectImpl for Caption {
+        fn constructed(&self) {
+            self.parent_constructed();
+            let widget = self.obj();
+            glib::timeout_add_local(
+                Duration::from_millis(250),
+                glib::clone!(#[weak] widget, #[upgrade_or] glib::ControlFlow::Break, move || {
+                    widget.fade_if_quiet();
+                    glib::ControlFlow::Continue
+                }),
+            );
+        }
+    }
 
     impl WidgetImpl for Caption {
         fn measure(&self, orientation: gtk::Orientation, _for_size: i32) -> (i32, i32, i32, i32) {
@@ -123,10 +153,35 @@ impl Caption {
     }
 
     pub fn set_text(&self, text: String, stable: usize) {
+        let imp = self.imp();
+        if *imp.text.borrow() == text && imp.stable.get() == stable {
+            return;
+        }
         self.update_property(&[gtk::accessible::Property::Label(&text)]);
-        self.imp().text.replace(text);
-        self.imp().stable.set(stable);
+        imp.text.replace(text);
+        imp.stable.set(stable);
+        imp.changed.set(Instant::now());
+        if let Some(fade) = imp.fade.take() {
+            fade.reset();
+        }
+        self.set_opacity(1.0);
         self.queue_draw();
+    }
+
+    /// Fade the caption away after a quiet spell, as a subtitle disappears
+    /// when nobody is talking. New words bring it straight back.
+    fn fade_if_quiet(&self) {
+        let imp = self.imp();
+        if self.opacity() < 1.0 || imp.fade.borrow().is_some() || imp.changed.get().elapsed() < FADE_AFTER {
+            return;
+        }
+        let target = adw::PropertyAnimationTarget::new(self, "opacity");
+        let fade = adw::TimedAnimation::new(self, 1.0, 0.0, 800, target);
+        fade.connect_done(glib::clone!(#[weak(rename_to = caption)] self, move |_| {
+            caption.imp().fade.take();
+        }));
+        fade.play();
+        imp.fade.replace(Some(fade));
     }
 
     pub fn set_style(&self, style: Style) {
@@ -149,6 +204,7 @@ const CSS: &str = "
 window.myna-captions { background: none; }
 window.myna-captions .chrome { opacity: 0; transition: opacity 200ms; }
 window.myna-captions:hover .chrome { opacity: 1; }
+window.myna-captions .source { padding: 2px 8px; border-radius: 6px; font-size: smaller; }
 window.myna-captions .grip { min-width: 18px; min-height: 18px; margin: 4px;
   border-right: 3px solid alpha(white, .7); border-bottom: 3px solid alpha(white, .7);
   border-bottom-right-radius: 8px; }
@@ -164,9 +220,16 @@ pub fn install_css() {
     );
 }
 
-/// The overlay window around `caption`. `on_close` runs once it closes, by
-/// its own button or otherwise.
+/// The overlay window around `caption`, labelled with its source.
 pub fn window(app: &adw::Application, title: &str, caption: &Caption) -> gtk::Window {
+    let source = gtk::Label::builder()
+        .label(title)
+        .css_classes(["osd", "chrome", "source"])
+        .halign(gtk::Align::Start)
+        .valign(gtk::Align::Start)
+        .margin_top(6)
+        .margin_start(10)
+        .build();
     let window = gtk::Window::builder()
         .application(app)
         .title(format!("Captions – {title}"))
@@ -212,6 +275,7 @@ pub fn window(app: &adw::Application, title: &str, caption: &Caption) -> gtk::Wi
 
     let overlay = gtk::Overlay::new();
     overlay.set_child(Some(caption));
+    overlay.add_overlay(&source);
     overlay.add_overlay(&close);
     overlay.add_overlay(&grip);
     window.set_child(Some(&gtk::WindowHandle::builder().child(&overlay).build()));

@@ -9,7 +9,7 @@ description = "Live captions for any PipeWire audio output, transcribed locally 
 gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
 adw = { package = "libadwaita", version = "0.9", features = ["v1_6"] }
 gdk4-x11 = "0.11"
-x11rb = "0.13"
+x11rb = { version = "0.13", features = ["shape"] }
 tokio = { version = "1", features = ["rt", "net", "process", "io-util", "sync", "macros", "time"] }
 tokio-tungstenite = "0.29"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
