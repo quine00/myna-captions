@@ -43,15 +43,27 @@ pub fn parse(dump: &str) -> Vec<Node> {
     let Ok(Value::Array(objects)) = serde_json::from_str::<Value>(dump) else {
         return Vec::new();
     };
-    objects.iter().filter_map(node).collect()
+    // A stream may leave its process id to its client object.
+    let processes: std::collections::HashMap<u64, u64> = objects
+        .iter()
+        .filter(|o| o.get("type").and_then(Value::as_str) == Some("PipeWire:Interface:Client"))
+        .filter_map(|o| {
+            let props = o.get("info")?.get("props")?;
+            Some((o.get("id")?.as_u64()?, number(props, "application.process.id")?))
+        })
+        .collect();
+    objects.iter().filter_map(|o| node(o, &processes)).collect()
 }
 
-fn node(object: &Value) -> Option<Node> {
+fn number(props: &Value, key: &str) -> Option<u64> {
+    props.get(key).and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
+}
+
+fn node(object: &Value, processes: &std::collections::HashMap<u64, u64>) -> Option<Node> {
     let info = object.get("info")?;
     let props = info.get("props")?;
     let prop = |k: &str| props.get(k).and_then(Value::as_str).filter(|s| !s.is_empty());
-    let number = |k: &str| props.get(k).and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()));
-    let serial = number("object.serial")?;
+    let serial = number(props, "object.serial")?;
     let running = info.get("state").and_then(Value::as_str) == Some("running");
     let (kind, key, title, media) = match prop("media.class")? {
         "Stream/Output/Audio" => {
@@ -59,7 +71,10 @@ fn node(object: &Value) -> Option<Node> {
                 return None;
             }
             let app = prop("application.name").or(prop("node.name")).unwrap_or("Unknown application");
-            let process = number("application.process.id").map(|p| p.to_string()).unwrap_or_default();
+            let process = number(props, "application.process.id")
+                .or_else(|| processes.get(&number(props, "client.id")?).copied())
+                .map(|p| p.to_string())
+                .unwrap_or_default();
             (Kind::App, format!("app:{app}:{process}"), app, prop("media.name").unwrap_or(""))
         }
         "Audio/Sink" => {
@@ -128,6 +143,8 @@ mod tests {
       {"id":5,"info":{"state":"running","props":{"media.class":"Stream/Output/Audio","object.serial":15,"application.name":"Firefox","application.process.id":42,"media.name":"Meet"}}},
       {"id":3,"info":{"state":"running","props":{"media.class":"Audio/Source","object.serial":12,"node.name":"mic","node.description":"Headset"}}},
       {"id":6,"info":{"state":"running","props":{"media.class":"Stream/Output/Audio","object.serial":16,"node.name":"myna-captions"}}},
+      {"id":7,"info":{"state":"running","props":{"media.class":"Stream/Output/Audio","object.serial":17,"application.name":"Firefox","client.id":9,"media.name":"Other tab"}}},
+      {"id":9,"type":"PipeWire:Interface:Client","info":{"props":{"application.process.id":42}}},
       {"id":4,"type":"PipeWire:Interface:Link"}
     ]"#;
 
@@ -141,7 +158,7 @@ mod tests {
     #[test]
     fn resolve_prefers_the_running_node() {
         let nodes = parse(DUMP);
-        assert_eq!(resolve(&nodes, "app:Firefox:42").map(|n| n.serial), Some(15));
+        assert_eq!(resolve(&nodes, "app:Firefox:42").map(|n| n.serial), Some(17));
         assert_eq!(resolve(&nodes, "app:Gone:1"), None);
     }
 
