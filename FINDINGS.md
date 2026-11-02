@@ -63,6 +63,32 @@ part of the night, so CPU and latency carry some noise, not enough to move
 the ranking. The harness, clips recipe and scorer are on Myna's
 `captions-live` branch under `dev/captions_eval/`.
 
+### French (2026-11-02, day)
+
+`nogaps_fr` is 338 s of FLEURS French readings butted together (1094
+reference words). Its absolute WERs read high: the normaliser leaves French
+numbers spelt one way in the reference and another in the output ("6 6" /
+"six six") and deletes parenthesised reference text the model did say, so
+compare rows, not against published figures.
+
+| method | WER | commit delay p50 / p90 / max | CPU s per audio s |
+|---|---|---|---|
+| Parakeet batch (reference) | 17.3% | - | - |
+| Parakeet bounded, 1 s ticks | 22.4% | 4.1 / 11.8 / 19.7 s | 1.28 |
+| **Nemotron 3.5 multilingual, fr-FR, 0.56 s, int8** | **15.5%** | **0.5 / 0.8 / 1.3 s** | **0.65** |
+
+- **Nemotron 3.5 brings the same feel to French**, more accurate than
+  Parakeet even in batch. It covers 19 transcription-ready locales. On
+  English it trails the English model (7.0% against 3.7% pause-free, 13.0%
+  against 11.3% on TV), so English stays on the English model.
+- **Kyutai STT 1B en/fr reads French best of all** (punctuated, cased,
+  near the reference) but is too heavy for this CPU under torch: 30 s of
+  audio took 64.5 s in fp32, about 30 s in int8 (2 cores), and bf16 was
+  slower still; the 1B step is memory-bandwidth bound every 80 ms. Kyutai's
+  Rust runtime with 4-bit weights is the way to try it again. Parked.
+- Voxtral Realtime (Mistral, Apache 2.0) was not tried: several times
+  larger again.
+
 ### Seen but not fixed
 
 - **Nemotron's punctuation is sparse** on conversational speech: captions
