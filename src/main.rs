@@ -165,7 +165,7 @@ fn build(
 
     let sources = adw::PreferencesGroup::builder()
         .title("Sources")
-        .description("Pick what to caption. Hold Ctrl over the captions to move, resize or close them; otherwise clicks go through to what is underneath.")
+        .description("Pick what to caption. Clicks go through the captions to what is underneath; point at their label to move, resize or close them.")
         .build();
     sources.add(&list);
 
@@ -311,9 +311,9 @@ impl App {
         };
 
         let caption = Caption::new(self.style.borrow().clone());
-        let window = overlay::window(&application, &node.title, &caption);
+        let (window, handle) = overlay::window(&application, &node.title, &caption);
         if self.x11 {
-            above::install(&window);
+            above::install(&window, &handle);
         }
 
         let (events_tx, events_rx) = async_channel::unbounded();

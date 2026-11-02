@@ -28,8 +28,9 @@ the slow baseline for captions (see `FINDINGS.md`).
 - Pick a **method** in the Engine group, then press **Caption** on a source.
   An application is followed across tabs and tracks; the caption stays up
   while it is quiet and fades after 6 s without speech.
-- **Hold Ctrl** over the captions to drag, resize (corner grip) or close
-  them. Otherwise clicks go through to whatever is underneath.
+- Clicks go **through** the captions to whatever is underneath, except on
+  their label pill. Point at the pill and the whole overlay wakes up: drag
+  to move, corner grip to resize, close button or Escape to stop.
 - **Words still being worked out**: show drafts at once (dimmed), only once
   two drafts agree, or only final text.
 

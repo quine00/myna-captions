@@ -35,6 +35,9 @@ impl Default for Style {
 /// Captions fade out once nothing new has been said for this long.
 const FADE_AFTER: Duration = Duration::from_secs(6);
 
+/// Height of the clear strip above the caption box that holds the handle.
+const HANDLE_STRIP: i32 = 28;
+
 const PAD_H: f32 = 24.0;
 const PAD_V: f32 = 14.0;
 const RADIUS: f32 = 14.0;
@@ -204,7 +207,9 @@ const CSS: &str = "
 window.myna-captions { background: none; }
 window.myna-captions .chrome { opacity: 0; transition: opacity 200ms; }
 window.myna-captions:hover .chrome { opacity: 1; }
-window.myna-captions .source { padding: 2px 8px; border-radius: 6px; font-size: smaller; }
+window.myna-captions .handle { padding: 2px 8px; border-radius: 6px; font-size: smaller; opacity: .45;
+  transition: opacity 200ms; }
+window.myna-captions:hover .handle { opacity: 1; }
 window.myna-captions .grip { min-width: 18px; min-height: 18px; margin: 4px;
   border-right: 3px solid alpha(white, .7); border-bottom: 3px solid alpha(white, .7);
   border-bottom-right-radius: 8px; }
@@ -220,16 +225,20 @@ pub fn install_css() {
     );
 }
 
-/// The overlay window around `caption`, labelled with its source.
-pub fn window(app: &adw::Application, title: &str, caption: &Caption) -> gtk::Window {
-    let source = gtk::Label::builder()
-        .label(title)
-        .css_classes(["osd", "chrome", "source"])
+/// The overlay window around `caption`, and its handle: a pill naming the
+/// source, the one part that always takes the pointer, so the rest can let
+/// clicks through.
+pub fn window(app: &adw::Application, title: &str, caption: &Caption) -> (gtk::Window, gtk::Widget) {
+    let source = gtk::Box::builder()
+        .spacing(6)
+        .css_classes(["osd", "handle"])
         .halign(gtk::Align::Start)
         .valign(gtk::Align::Start)
-        .margin_top(6)
         .margin_start(10)
+        .tooltip_text("Drag to move")
         .build();
+    source.append(&gtk::Image::from_icon_name("list-drag-handle-symbolic"));
+    source.append(&gtk::Label::new(Some(title)));
     let window = gtk::Window::builder()
         .application(app)
         .title(format!("Captions – {title}"))
@@ -244,7 +253,7 @@ pub fn window(app: &adw::Application, title: &str, caption: &Caption) -> gtk::Wi
         .tooltip_text("Stop captions")
         .halign(gtk::Align::End)
         .valign(gtk::Align::Start)
-        .margin_top(6)
+        .margin_top(HANDLE_STRIP + 6)
         .margin_end(6)
         .build();
     close.connect_clicked(glib::clone!(#[weak] window, move |_| window.close()));
@@ -273,6 +282,9 @@ pub fn window(app: &adw::Application, title: &str, caption: &Caption) -> gtk::Wi
     }));
     grip.add_controller(press);
 
+    // The handle sits in a clear strip above the caption box, never on the
+    // text; the strip passes clicks through like the rest.
+    caption.set_margin_top(HANDLE_STRIP);
     let overlay = gtk::Overlay::new();
     overlay.set_child(Some(caption));
     overlay.add_overlay(&source);
@@ -286,5 +298,5 @@ pub fn window(app: &adw::Application, title: &str, caption: &Caption) -> gtk::Wi
         Some(gtk::NamedAction::new("window.close")),
     ));
     window.add_controller(escape);
-    window
+    (window, source.upcast())
 }
