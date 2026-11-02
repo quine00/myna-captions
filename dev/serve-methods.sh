@@ -4,7 +4,9 @@
 #
 #   dev/serve-methods.sh [method ...]     default: every method
 #
-# Methods: nemotron-560, nemotron-1120, parakeet-bounded
+# Methods: nemotron-560, nemotron-1120 (English), nemotron35-560 (French and
+# 17 more locales; set the language in the app, or it detects), and
+# parakeet-bounded
 #
 # MYNA_TREE is a Myna checkout carrying the captions-live branch (Parakeet's
 # bounded window and the Nemotron server). NEMO_VENV holds NeMo and torch,
@@ -19,11 +21,13 @@ if [ ! -x "$NEMO_VENV/bin/python" ]; then
         "websockets>=15" --index-strategy unsafe-best-match \
         --extra-index-url https://download.pytorch.org/whl/cpu
 fi
-NEMO_MODEL=${NEMO_MODEL:-$(ls "$HOME"/.cache/huggingface/hub/models--nvidia--nemotron-speech-streaming-en-0.6b/snapshots/*/*.nemo)}
+HF=$HOME/.cache/huggingface/hub
+NEMO_MODEL=${NEMO_MODEL:-$(ls "$HF"/models--nvidia--nemotron-speech-streaming-en-0.6b/snapshots/*/*.nemo)}
+NEMO35_MODEL=${NEMO35_MODEL:-$(ls "$HF"/models--nvidia--nemotron-3.5-asr-streaming-0.6b/snapshots/*/*.nemo 2>/dev/null || true)}
 DIR=${XDG_RUNTIME_DIR:?}/myna-captions
 mkdir -p "$DIR"
 methods=("$@")
-[ ${#methods[@]} -gt 0 ] || methods=(nemotron-560 nemotron-1120 parakeet-bounded)
+[ ${#methods[@]} -gt 0 ] || methods=(nemotron-560 nemotron35-560 parakeet-bounded)
 
 pids=()
 cleanup() {
@@ -42,11 +46,17 @@ for m in "${methods[@]}"; do
             --preload --socket "$DIR/$m.sock" &
         ;;
     nemotron-1120 | nemotron-560)
-        rc=13 label="Nemotron, 1.12 s chunks (commits ~0.9 s)"
-        [ "$m" = nemotron-560 ] && rc=6 label="Nemotron, 0.56 s chunks (commits ~0.5 s)"
+        rc=13 label="Nemotron English, 1.12 s chunks (commits ~0.7 s)"
+        [ "$m" = nemotron-560 ] && rc=6 label="Nemotron English, 0.56 s chunks (commits ~0.3 s)"
         echo "$label" > "$DIR/$m.label"
         "$NEMO_VENV/bin/python" "$MYNA_TREE/dev/captions_eval/nemotron_server.py" \
             "$NEMO_MODEL" "$DIR/$m.sock" --right-context "$rc" &
+        ;;
+    nemotron35-560)
+        [ -n "$NEMO35_MODEL" ] || { echo "nemotron-3.5-asr-streaming-0.6b is not downloaded" >&2; exit 2; }
+        echo "Nemotron multilingual 3.5, 0.56 s chunks (French and more)" > "$DIR/$m.label"
+        "$NEMO_VENV/bin/python" "$MYNA_TREE/dev/captions_eval/nemotron_server.py" \
+            "$NEMO35_MODEL" "$DIR/$m.sock" --right-context 6 --language auto &
         ;;
     *) echo "unknown method $m" >&2; exit 2 ;;
     esac
