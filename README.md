@@ -1,31 +1,42 @@
 # Myna Captions
 
-Live captions for any audio playing on the desktop. Pick a PipeWire output (an
-application's stream, or a whole device's mix), and its speech shows as
-subtitles in a floating, translucent overlay you can drag and resize. Speech is
-transcribed locally by an installed [Myna](https://github.com/canonical/myna)
-inference backend.
+Live captions for anything you can hear on the desktop. Pick an
+application, an output device or a microphone, and its speech shows as
+subtitles in a floating, translucent overlay. Speech is transcribed locally by
+a [Myna](https://github.com/canonical/myna) engine.
 
-Prototype. See `FINDINGS.md` for what it taught us and what is still open.
+Prototype. `FINDINGS.md` has what it taught us and the decisions so far.
 
-## Running
+## Trying it
 
-Needs PipeWire with `pw-dump` and `pw-record`, and a Myna backend snap
-(`myna-parakeet` is the one that streams by default).
+Needs PipeWire (`pw-dump`, `pw-record`) and at least one engine.
 
 ```shell
+# Engines: the caption methods under evaluation, one socket each. Needs a
+# Myna checkout on the captions-live branch (MYNA_TREE); NeMo and torch go
+# into their own venv under ~/.cache/myna on first run.
+dev/serve-methods.sh                     # every method
+dev/serve-methods.sh nemotron-1120       # just one
+
 cargo run --release
-cargo run --release -- --caption <object.serial>    # start one straight away
-MYNA_CAPTIONS_TRACE=1 cargo run -- ...                # print every wire event
 ```
+
+Installed Myna snaps (`myna-parakeet` and friends) are listed as engines too,
+after the locally served methods. They run Myna's dictation loop, which is
+the slow baseline for captions (see `FINDINGS.md`).
+
+- Pick a **method** in the Engine group, then press **Caption** on a source.
+  An application is followed across tabs and tracks; the caption stays up
+  while it is quiet and fades after 6 s without speech.
+- **Hold Ctrl** over the captions to drag, resize (corner grip) or close
+  them. Otherwise clicks go through to whatever is underneath.
+- **Words still being worked out**: show drafts at once (dimmed), only once
+  two drafts agree, or only final text.
+
+Flags:
 
 - `--wayland` keeps GTK on Wayland. By default the app runs on XWayland,
   because GNOME Wayland offers no way for a window to stay above others.
-- `--socket PATH` adds a backend socket ahead of the discovered ones.
-
-## Using the overlay
-
-- Drag anywhere to move it.
-- Drag the corner grip to resize; its height sets how many lines show.
-- The close button or Escape stops the captions.
-- Text still being revised is drawn dimmer than settled text.
+- `--socket PATH` lists one more engine first.
+- `--caption KEY` starts captioning a source at launch (`app:NAME:PID`,
+  `sink:NODE`, `mic:NODE`; `MYNA_CAPTIONS_TRACE=1` prints every wire event).

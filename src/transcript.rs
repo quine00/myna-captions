@@ -30,14 +30,15 @@ pub struct Transcript {
 }
 
 impl Transcript {
-    /// A delta. Committed deltas extend the item; an unstable one replaces
-    /// the hypothesis after it.
+    /// A delta. Committed deltas extend the item verbatim: they carry their
+    /// own leading space, and a streaming model may end one inside a word
+    /// ("flav" + "or"). An unstable one replaces the hypothesis after them.
     pub fn delta(&mut self, item_id: &str, text: &str, unstable: bool) {
         self.enter(item_id);
         if unstable {
             self.previous = std::mem::replace(&mut self.tentative, text.trim().to_owned());
         } else {
-            push_words(&mut self.item, text);
+            self.item.push_str(if self.item.is_empty() { text.trim_start() } else { text });
             self.tentative.clear();
             self.previous.clear();
         }
@@ -137,8 +138,17 @@ mod tests {
         let mut t = Transcript::default();
         t.delta("a", "One.", false);
         t.delta("a", "Two", true);
-        t.delta("a", "Two.", false);
+        t.delta("a", " Two.", false);
         assert_eq!(t.display(Revisions::Draft), ("One. Two.".into(), 9));
+    }
+
+    #[test]
+    fn committed_pieces_join_without_invented_spaces() {
+        let mut t = Transcript::default();
+        for piece in ["Bring", " hundreds", " of thousand", "s", " of", " flav", "or."] {
+            t.delta("a", piece, false);
+        }
+        assert_eq!(t.display(Revisions::Draft).0, "Bring hundreds of thousands of flavor.");
     }
 
     #[test]
@@ -152,7 +162,7 @@ mod tests {
     #[test]
     fn steady_shows_only_what_two_drafts_agree_on() {
         let mut t = Transcript::default();
-        t.delta("a", "Done.", false);
+        t.delta("a", " Done.", false);
         t.delta("a", "We have also", true);
         t.delta("a", "We have always been", true);
         assert_eq!(t.display(Revisions::Steady), ("Done. We have".into(), 5));

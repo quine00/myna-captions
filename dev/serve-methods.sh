@@ -4,19 +4,26 @@
 #
 #   dev/serve-methods.sh [method ...]     default: every method
 #
-# Methods: parakeet-bounded, nemotron-1120, nemotron-560
+# Methods: nemotron-560, nemotron-1120, parakeet-bounded
 #
 # MYNA_TREE is a Myna checkout carrying the captions-live branch (Parakeet's
-# bounded window and the Nemotron server); NEMO_VENV a Python environment
-# with nemo_toolkit[asr] and torch, kept out of Myna's own lock.
+# bounded window and the Nemotron server). NEMO_VENV holds NeMo and torch,
+# kept out of Myna's own lock; it is built on first use, from the uv cache
+# where it can be.
 set -euo pipefail
 MYNA_TREE=${MYNA_TREE:-$HOME/Projects/myna-captions-live}
-NEMO_VENV=${NEMO_VENV:?set NEMO_VENV to a venv with nemo_toolkit[asr]==3.0.0 and torch}
+NEMO_VENV=${NEMO_VENV:-$HOME/.cache/myna/captions-nemo-venv}
+if [ ! -x "$NEMO_VENV/bin/python" ]; then
+    uv venv -q -p 3.12 "$NEMO_VENV"
+    VIRTUAL_ENV=$NEMO_VENV uv pip install -q "nemo_toolkit[asr]==3.0.0" "torch==2.14.0" \
+        "websockets>=15" --index-strategy unsafe-best-match \
+        --extra-index-url https://download.pytorch.org/whl/cpu
+fi
 NEMO_MODEL=${NEMO_MODEL:-$(ls "$HOME"/.cache/huggingface/hub/models--nvidia--nemotron-speech-streaming-en-0.6b/snapshots/*/*.nemo)}
 DIR=${XDG_RUNTIME_DIR:?}/myna-captions
 mkdir -p "$DIR"
 methods=("$@")
-[ ${#methods[@]} -gt 0 ] || methods=(parakeet-bounded nemotron-1120 nemotron-560)
+[ ${#methods[@]} -gt 0 ] || methods=(nemotron-560 nemotron-1120 parakeet-bounded)
 
 pids=()
 cleanup() {
@@ -35,8 +42,9 @@ for m in "${methods[@]}"; do
             --preload --socket "$DIR/$m.sock" &
         ;;
     nemotron-1120 | nemotron-560)
-        rc=13; [ "$m" = nemotron-560 ] && rc=6
-        echo "Nemotron streaming, ${m#nemotron-} ms chunks" > "$DIR/$m.label"
+        rc=13 label="Nemotron, 1.12 s chunks (commits ~0.9 s)"
+        [ "$m" = nemotron-560 ] && rc=6 label="Nemotron, 0.56 s chunks (commits ~0.5 s)"
+        echo "$label" > "$DIR/$m.label"
         "$NEMO_VENV/bin/python" "$MYNA_TREE/dev/captions_eval/nemotron_server.py" \
             "$NEMO_MODEL" "$DIR/$m.sock" --right-context "$rc" &
         ;;
