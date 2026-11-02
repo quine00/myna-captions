@@ -5,6 +5,39 @@ seed of a reusable library), and the questions still to settle. The parked
 2026-08-25 design (`~/captioning-client.md`) is the earlier thinking; where it
 conflicts with this file, this file has been measured.
 
+## Resume here (2026-11-02)
+
+Where things are:
+
+- This repo: the app (Rust, GTK4). `dev/serve-methods.sh` serves the
+  engines; `dev/fake_engine.py` is a scripted engine for UI work;
+  `dev/nested-drag.sh` is the nested-Shell overlay rig (hover only, see its
+  header).
+- Myna worktree `~/Projects/myna-captions-live`, branch `captions-live`
+  (local, **commits unsigned: re-sign before pushing**): Parakeet's
+  local-agreement strategy, and `dev/captions_eval/` (prep, run, score, the
+  Nemotron and Kyutai servers).
+- Data and environments, all outside git: clips and results in
+  `~/.cache/myna/captions-eval` (re-score with `score.py` there); NeMo venv
+  `~/.cache/myna/captions-nemo-venv`, Kyutai venv
+  `~/.cache/myna/captions-kyutai-venv`; models in the Hugging Face cache
+  (nemotron-speech-streaming-en, nemotron-3.5-asr-streaming, kyutai
+  stt-1b-en_fr).
+
+Open, in order:
+
+1. **Dragging the overlay on the live session is unconfirmed.** GTK's
+   window-handle move did nothing under Mutter/XWayland; the pill now
+   configures the window itself. Run with `MYNA_CAPTIONS_TRACE=1` and read
+   the `overlay` lines if it still does not move.
+2. **Productise the method:** port Nemotron (English and 3.5) to int8 ONNX
+   with a torch-free loop as a Myna adapter, then the wire work decided in
+   the grilling (intent and bounds, methods advertised in
+   `session.created`).
+3. **Sparse punctuation** on conversational English.
+4. **The library** (table below), the GNOME Shell renderer (decided,
+   deferred while XWayland suffices), and Kyutai again via its Rust runtime.
+
 ## Overnight feasibility run (2026-11-02)
 
 Question: can live captions feel snappy and accurate on this laptop?
