@@ -16,10 +16,10 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gdk, glib};
 
-use nodes::{Kind, Node};
+use nodes::{Kind, Source};
 use overlay::{Caption, Style};
 use session::Event;
-use transcript::Transcript;
+use transcript::{Revisions, Transcript};
 
 const APP_ID: &str = "com.canonical.Myna.Captions";
 
@@ -27,17 +27,21 @@ struct Running {
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     window: gtk::Window,
     caption: Caption,
+    source: Source,
 }
 
 struct App {
     runtime: tokio::runtime::Handle,
     x11: bool,
-    backends: Vec<(String, PathBuf)>,
-    backend: RefCell<usize>,
+    /// `--socket`, listed ahead of the discovered engines.
+    extra: Option<(String, PathBuf)>,
+    backends: RefCell<Vec<(String, PathBuf)>>,
+    backend_row: adw::ComboRow,
     language: RefCell<Option<String>>,
+    revisions: Rc<std::cell::Cell<Revisions>>,
     style: RefCell<Style>,
-    sessions: RefCell<HashMap<u64, Running>>,
-    shown: RefCell<Vec<Node>>,
+    sessions: RefCell<HashMap<String, Running>>,
+    shown: RefCell<Vec<Source>>,
     list: gtk::ListBox,
 }
 
@@ -45,14 +49,14 @@ fn main() -> glib::ExitCode {
     let mut args = std::env::args().skip(1);
     let mut x11 = true;
     let mut socket = None;
-    let mut autostart = None;
+    let mut autostart: Option<String> = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--wayland" => x11 = false,
             "--socket" => socket = args.next().map(PathBuf::from),
-            "--caption" => autostart = args.next().and_then(|s| s.parse::<u64>().ok()),
+            "--caption" => autostart = args.next(),
             _ => {
-                eprintln!("usage: myna-captions [--wayland] [--socket PATH] [--caption SERIAL]");
+                eprintln!("usage: myna-captions [--wayland] [--socket PATH] [--caption SOURCE-KEY]");
                 return glib::ExitCode::FAILURE;
             }
         }
@@ -67,10 +71,7 @@ fn main() -> glib::ExitCode {
     let handle = runtime.handle().clone();
     std::thread::spawn(move || runtime.block_on(std::future::pending::<()>()));
 
-    let mut backends = session::backends();
-    if let Some(socket) = socket {
-        backends.insert(0, (socket.display().to_string(), socket));
-    }
+    let extra = socket.map(|socket| (socket.display().to_string(), socket));
 
     // A scripted run must not hand itself to an instance already running.
     let flags = if autostart.is_some() { gtk::gio::ApplicationFlags::NON_UNIQUE } else { Default::default() };
@@ -81,7 +82,7 @@ fn main() -> glib::ExitCode {
             return;
         }
         overlay::install_css();
-        build(application, handle.clone(), x11, backends.clone(), autostart);
+        build(application, handle.clone(), x11, extra.clone(), autostart.clone());
     });
     application.run_with_args::<&str>(&[])
 }
@@ -90,16 +91,18 @@ fn build(
     application: &adw::Application,
     runtime: tokio::runtime::Handle,
     x11: bool,
-    backends: Vec<(String, PathBuf)>,
-    autostart: Option<u64>,
+    extra: Option<(String, PathBuf)>,
+    autostart: Option<String>,
 ) {
     let list = gtk::ListBox::builder().css_classes(["boxed-list"]).selection_mode(gtk::SelectionMode::None).build();
     let app = Rc::new(App {
         runtime,
         x11,
-        backends,
-        backend: RefCell::new(0),
+        extra,
+        backends: RefCell::new(Vec::new()),
+        backend_row: adw::ComboRow::builder().title("Method").build(),
         language: RefCell::new(None),
+        revisions: Rc::new(std::cell::Cell::new(Revisions::Draft)),
         style: RefCell::new(Style::default()),
         sessions: RefCell::new(HashMap::new()),
         shown: RefCell::new(Vec::new()),
@@ -107,25 +110,27 @@ fn build(
     });
 
     let engine = adw::PreferencesGroup::builder().title("Engine").build();
-    let names: Vec<&str> = app.backends.iter().map(|(name, _)| name.as_str()).collect();
-    let backend_row = adw::ComboRow::builder()
-        .title("Backend")
-        .model(&gtk::StringList::new(&names))
-        .build();
-    if names.is_empty() {
-        backend_row.set_subtitle("No Myna backend is installed");
-        backend_row.set_sensitive(false);
-    }
-    backend_row.connect_selected_notify(glib::clone!(#[weak] app, move |row| {
-        *app.backend.borrow_mut() = row.selected() as usize;
-    }));
+    let backend_row = app.backend_row.clone();
+    app.rescan_engines();
     let language_row = adw::EntryRow::builder().title("Language code (empty for automatic)").build();
     language_row.connect_changed(glib::clone!(#[weak] app, move |row| {
         let text = row.text().trim().to_owned();
         *app.language.borrow_mut() = (!text.is_empty()).then_some(text);
     }));
+    let revisions_row = adw::ComboRow::builder()
+        .title("Words still being worked out")
+        .model(&gtk::StringList::new(&["Show at once, dimmed", "Show once steady", "Hide until final"]))
+        .build();
+    revisions_row.connect_selected_notify(glib::clone!(#[weak] app, move |row| {
+        app.revisions.set(match row.selected() {
+            1 => Revisions::Steady,
+            2 => Revisions::Final,
+            _ => Revisions::Draft,
+        });
+    }));
     engine.add(&backend_row);
     engine.add(&language_row);
+    engine.add(&revisions_row);
 
     let appearance = adw::PreferencesGroup::builder().title("Appearance").build();
     let font = gtk::FontDialogButton::builder()
@@ -159,8 +164,8 @@ fn build(
     appearance.add(&lines);
 
     let sources = adw::PreferencesGroup::builder()
-        .title("Audio Outputs")
-        .description("Pick what to caption. Captions appear in a window you can drag anywhere.")
+        .title("Sources")
+        .description("Pick what to caption. Hold Ctrl over the captions to move, resize or close them; otherwise clicks go through to what is underneath.")
         .build();
     sources.add(&list);
 
@@ -181,9 +186,9 @@ fn build(
     window.present();
 
     app.refresh();
-    let wanted = autostart.and_then(|serial| app.shown.borrow().iter().find(|n| n.serial == serial).cloned());
-    match (autostart, wanted) {
-        (Some(serial), None) => eprintln!("myna-captions: no audio output has serial {serial}"),
+    let wanted = autostart.as_ref().and_then(|key| app.shown.borrow().iter().find(|s| &s.key == key).cloned());
+    match (&autostart, wanted) {
+        (Some(key), None) => eprintln!("myna-captions: no source {key}"),
         (_, Some(node)) => app.start(&node),
         _ => {}
     }
@@ -214,47 +219,79 @@ impl App {
         }
     }
 
-    /// Rebuild the output list when the graph changed.
+    /// Offer the engines there are now, keeping the user's pick.
+    fn rescan_engines(&self) {
+        let mut found: Vec<(String, PathBuf)> = self.extra.iter().cloned().collect();
+        found.extend(session::backends());
+        if *self.backends.borrow() == found {
+            return;
+        }
+        let picked = self.engine().map(|(_, socket)| socket);
+        let names: Vec<&str> = found.iter().map(|(name, _)| name.as_str()).collect();
+        self.backend_row.set_model(Some(&gtk::StringList::new(&names)));
+        let index = picked.and_then(|p| found.iter().position(|(_, s)| *s == p)).unwrap_or(0);
+        self.backend_row.set_selected(index as u32);
+        self.backend_row.set_sensitive(!found.is_empty());
+        self.backend_row.set_subtitle(if found.is_empty() { "No Myna engine is running" } else { "" });
+        self.backends.replace(found);
+    }
+
+    fn engine(&self) -> Option<(String, PathBuf)> {
+        self.backends.borrow().get(self.backend_row.selected() as usize).cloned()
+    }
+
+    /// Rebuild the source list when the graph changed.
     fn refresh(self: &Rc<Self>) {
-        let nodes = nodes::list();
-        if *self.shown.borrow() == nodes {
+        self.rescan_engines();
+        let mut sources = nodes::sources(&nodes::list());
+        // A followed source stays listed while it has no node.
+        for (key, running) in self.sessions.borrow().iter() {
+            if !sources.iter().any(|s| &s.key == key) {
+                sources.push(running.source.clone());
+            }
+        }
+        if *self.shown.borrow() == sources {
             return;
         }
         self.list.remove_all();
-        if nodes.is_empty() {
-            self.list.append(&adw::ActionRow::builder().title("No audio outputs").build());
+        if sources.is_empty() {
+            self.list.append(&adw::ActionRow::builder().title("Nothing to caption").build());
         }
-        for node in &nodes {
-            self.list.append(&self.row(node));
+        for source in &sources {
+            self.list.append(&self.row(source));
         }
-        self.shown.replace(nodes);
+        self.shown.replace(sources);
     }
 
-    fn row(self: &Rc<Self>, node: &Node) -> adw::ActionRow {
+    fn row(self: &Rc<Self>, node: &Source) -> adw::ActionRow {
         let row = adw::ActionRow::builder()
             .title(glib::markup_escape_text(&node.title))
             .subtitle(glib::markup_escape_text(&node.subtitle))
             .build();
         row.add_prefix(&gtk::Image::from_icon_name(match node.kind {
-            Kind::Stream => "applications-multimedia-symbolic",
+            Kind::App => "applications-multimedia-symbolic",
             Kind::Sink => "audio-speakers-symbolic",
+            Kind::Mic => "audio-input-microphone-symbolic",
         }));
-        if node.running {
+        if node.running && node.kind != Kind::Mic {
             row.add_suffix(&gtk::Label::builder().label("Playing").css_classes(["dim-label", "caption"]).build());
         }
         let toggle = gtk::ToggleButton::builder()
             .label("Caption")
             .valign(gtk::Align::Center)
-            .active(self.sessions.borrow().contains_key(&node.serial))
+            .active(self.sessions.borrow().contains_key(&node.key))
             .build();
         let node = node.clone();
         toggle.connect_toggled(glib::clone!(#[weak(rename_to = app)] self, move |toggle| {
             if toggle.is_active() {
-                if !app.sessions.borrow().contains_key(&node.serial) {
+                if !app.sessions.borrow().contains_key(&node.key) {
                     app.start(&node);
                 }
-            } else if let Some(running) = app.sessions.borrow().get(&node.serial) {
-                running.window.close();
+            } else {
+                let window = app.sessions.borrow().get(&node.key).map(|r| r.window.clone());
+                if let Some(window) = window {
+                    window.close();
+                }
             }
         }));
         row.add_suffix(&toggle);
@@ -262,8 +299,8 @@ impl App {
         row
     }
 
-    fn start(self: &Rc<Self>, node: &Node) {
-        let Some((_, socket)) = self.backends.get(*self.backend.borrow()).cloned() else {
+    fn start(self: &Rc<Self>, node: &Source) {
+        let Some((_, socket)) = self.engine() else {
             eprintln!("myna-captions: no backend to transcribe with");
             return;
         };
@@ -276,22 +313,22 @@ impl App {
         let caption = Caption::new(self.style.borrow().clone());
         let window = overlay::window(&application, &node.title, &caption);
         if self.x11 {
-            above::keep_above(&window);
+            above::install(&window);
         }
 
         let (events_tx, events_rx) = async_channel::unbounded();
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
         let spec = session::Spec {
             socket,
-            serial: node.serial,
-            kind: node.kind.clone(),
+            key: node.key.clone(),
             language: self.language.borrow().clone(),
         };
         self.runtime.spawn(session::run(spec, events_tx, stop_rx));
 
-        let serial = node.serial;
+        let key = node.key.clone();
         window.connect_close_request(glib::clone!(#[weak(rename_to = app)] self, #[upgrade_or] glib::Propagation::Proceed, move |_| {
-            if let Some(mut running) = app.sessions.borrow_mut().remove(&serial) {
+            let removed = app.sessions.borrow_mut().remove(&key);
+            if let Some(mut running) = removed {
                 if let Some(stop) = running.stop.take() {
                     let _ = stop.send(());
                 }
@@ -301,6 +338,7 @@ impl App {
             glib::Propagation::Proceed
         }));
 
+        let revisions = self.revisions.clone();
         glib::spawn_future_local(glib::clone!(#[weak] caption, async move {
             let mut transcript = Transcript::default();
             let trace = std::env::var_os("MYNA_CAPTIONS_TRACE").is_some();
@@ -311,7 +349,7 @@ impl App {
                 }
                 match event {
                     Event::Status(state) => {
-                        if transcript.display().0.is_empty() {
+                        if transcript.is_empty() {
                             let waiting = if state == "loading" { "Loading the speech model…" } else { "" };
                             caption.set_text(waiting.to_owned(), 0);
                         }
@@ -325,12 +363,12 @@ impl App {
                         break;
                     }
                 }
-                let (text, stable) = transcript.display();
+                let (text, stable) = transcript.display(revisions.get());
                 caption.set_text(text, stable);
             }
         }));
 
         window.present();
-        self.sessions.borrow_mut().insert(serial, Running { stop: Some(stop_tx), window, caption });
+        self.sessions.borrow_mut().insert(node.key.clone(), Running { stop: Some(stop_tx), window, caption, source: node.clone() });
     }
 }
