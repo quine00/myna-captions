@@ -162,7 +162,8 @@ async fn follow(key: String, pcm: mpsc::Sender<Vec<u8>>) {
 fn record(serial: u64, kind: &Kind) -> Result<tokio::process::Child, String> {
     let mut command = Command::new("pw-record");
     command
-        .args(["--target", &serial.to_string()])
+        // Without --raw, PipeWire 1.6 wraps stdout in a big-endian AU stream.
+        .args(["--raw", "--target", &serial.to_string()])
         .args([
             "--rate",
             &SAMPLE_RATE.to_string(),
