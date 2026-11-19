@@ -311,11 +311,19 @@ pub fn backends() -> Vec<(String, PathBuf)> {
                 .then(|| (dir.file_name().to_string_lossy().into_owned(), socket))
         })
         .collect();
-    // Parakeet is the one snap that streams out of the box; the others
-    // answer only at the end of the audio, which for captions is never.
-    snaps.sort_by_key(|(name, _)| (name != "myna-parakeet", name.clone()));
+    snaps.sort_by_key(|(name, _)| (snap_rank(name), name.clone()));
     found.extend(snaps);
     found
+}
+
+/// Nemotron commits each word as it is spoken, Parakeet at pauses; the other
+/// snaps answer only at the end of the audio, which for captions is never.
+fn snap_rank(name: &str) -> u8 {
+    match name {
+        "myna-nemotron" => 0,
+        "myna-parakeet" => 1,
+        _ => 2,
+    }
 }
 
 #[cfg(test)]
@@ -362,5 +370,25 @@ mod tests {
         assert!(session_update(None)["session"]["audio"]["input"]
             .get("transcription")
             .is_none());
+    }
+
+    #[test]
+    fn streaming_snaps_are_offered_first() {
+        let mut names = [
+            "myna-whisper",
+            "myna-parakeet",
+            "myna-funasr",
+            "myna-nemotron",
+        ];
+        names.sort_by_key(|name| (snap_rank(name), *name));
+        assert_eq!(
+            names,
+            [
+                "myna-nemotron",
+                "myna-parakeet",
+                "myna-funasr",
+                "myna-whisper"
+            ]
+        );
     }
 }
