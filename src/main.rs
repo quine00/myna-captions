@@ -56,7 +56,9 @@ fn main() -> glib::ExitCode {
             "--socket" => socket = args.next().map(PathBuf::from),
             "--caption" => autostart = args.next(),
             _ => {
-                eprintln!("usage: myna-captions [--wayland] [--socket PATH] [--caption SOURCE-KEY]");
+                eprintln!(
+                    "usage: myna-captions [--wayland] [--socket PATH] [--caption SOURCE-KEY]"
+                );
                 return glib::ExitCode::FAILURE;
             }
         }
@@ -67,22 +69,38 @@ fn main() -> glib::ExitCode {
         gdk::set_allowed_backends("x11,*");
     }
 
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
     let handle = runtime.handle().clone();
     std::thread::spawn(move || runtime.block_on(std::future::pending::<()>()));
 
     let extra = socket.map(|socket| (socket.display().to_string(), socket));
 
     // A scripted run must not hand itself to an instance already running.
-    let flags = if autostart.is_some() { gtk::gio::ApplicationFlags::NON_UNIQUE } else { Default::default() };
-    let application = adw::Application::builder().application_id(APP_ID).flags(flags).build();
+    let flags = if autostart.is_some() {
+        gtk::gio::ApplicationFlags::NON_UNIQUE
+    } else {
+        Default::default()
+    };
+    let application = adw::Application::builder()
+        .application_id(APP_ID)
+        .flags(flags)
+        .build();
     application.connect_activate(move |application| {
         if let Some(window) = application.active_window() {
             window.present();
             return;
         }
         overlay::install_css();
-        build(application, handle.clone(), x11, extra.clone(), autostart.clone());
+        build(
+            application,
+            handle.clone(),
+            x11,
+            extra.clone(),
+            autostart.clone(),
+        );
     });
     application.run_with_args::<&str>(&[])
 }
@@ -94,7 +112,10 @@ fn build(
     extra: Option<(String, PathBuf)>,
     autostart: Option<String>,
 ) {
-    let list = gtk::ListBox::builder().css_classes(["boxed-list"]).selection_mode(gtk::SelectionMode::None).build();
+    let list = gtk::ListBox::builder()
+        .css_classes(["boxed-list"])
+        .selection_mode(gtk::SelectionMode::None)
+        .build();
     let app = Rc::new(App {
         runtime,
         x11,
@@ -112,22 +133,36 @@ fn build(
     let engine = adw::PreferencesGroup::builder().title("Engine").build();
     let backend_row = app.backend_row.clone();
     app.rescan_engines();
-    let language_row = adw::EntryRow::builder().title("Language code (empty for automatic)").build();
-    language_row.connect_changed(glib::clone!(#[weak] app, move |row| {
-        let text = row.text().trim().to_owned();
-        *app.language.borrow_mut() = (!text.is_empty()).then_some(text);
-    }));
+    let language_row = adw::EntryRow::builder()
+        .title("Language code (empty for automatic)")
+        .build();
+    language_row.connect_changed(glib::clone!(
+        #[weak]
+        app,
+        move |row| {
+            let text = row.text().trim().to_owned();
+            *app.language.borrow_mut() = (!text.is_empty()).then_some(text);
+        }
+    ));
     let revisions_row = adw::ComboRow::builder()
         .title("Words still being worked out")
-        .model(&gtk::StringList::new(&["Show at once, dimmed", "Show once steady", "Hide until final"]))
+        .model(&gtk::StringList::new(&[
+            "Show at once, dimmed",
+            "Show once steady",
+            "Hide until final",
+        ]))
         .build();
-    revisions_row.connect_selected_notify(glib::clone!(#[weak] app, move |row| {
-        app.revisions.set(match row.selected() {
-            1 => Revisions::Steady,
-            2 => Revisions::Final,
-            _ => Revisions::Draft,
-        });
-    }));
+    revisions_row.connect_selected_notify(glib::clone!(
+        #[weak]
+        app,
+        move |row| {
+            app.revisions.set(match row.selected() {
+                1 => Revisions::Steady,
+                2 => Revisions::Final,
+                _ => Revisions::Draft,
+            });
+        }
+    ));
     engine.add(&backend_row);
     engine.add(&language_row);
     engine.add(&revisions_row);
@@ -138,27 +173,39 @@ fn build(
         .font_desc(&app.style.borrow().font)
         .valign(gtk::Align::Center)
         .build();
-    font.connect_font_desc_notify(glib::clone!(#[weak] app, move |button| {
-        if let Some(font) = button.font_desc() {
-            app.restyle(|style| style.font = font);
+    font.connect_font_desc_notify(glib::clone!(
+        #[weak]
+        app,
+        move |button| {
+            if let Some(font) = button.font_desc() {
+                app.restyle(|style| style.font = font);
+            }
         }
-    }));
+    ));
     let font_row = adw::ActionRow::builder().title("Font").build();
     font_row.add_suffix(&font);
     font_row.set_activatable_widget(Some(&font));
     let opacity = adw::SpinRow::with_range(0.0, 100.0, 5.0);
     opacity.set_title("Background opacity");
     opacity.set_value((app.style.borrow().background.alpha() * 100.0).round() as f64);
-    opacity.connect_value_notify(glib::clone!(#[weak] app, move |row| {
-        let alpha = row.value() as f32 / 100.0;
-        app.restyle(|style| style.background.set_alpha(alpha));
-    }));
+    opacity.connect_value_notify(glib::clone!(
+        #[weak]
+        app,
+        move |row| {
+            let alpha = row.value() as f32 / 100.0;
+            app.restyle(|style| style.background.set_alpha(alpha));
+        }
+    ));
     let lines = adw::SpinRow::with_range(1.0, 6.0, 1.0);
     lines.set_title("Lines for new captions");
     lines.set_value(app.style.borrow().lines as f64);
-    lines.connect_value_notify(glib::clone!(#[weak] app, move |row| {
-        app.style.borrow_mut().lines = row.value() as i32;
-    }));
+    lines.connect_value_notify(glib::clone!(
+        #[weak]
+        app,
+        move |row| {
+            app.style.borrow_mut().lines = row.value() as i32;
+        }
+    ));
     appearance.add(&font_row);
     appearance.add(&opacity);
     appearance.add(&lines);
@@ -186,7 +233,9 @@ fn build(
     window.present();
 
     app.refresh();
-    let wanted = autostart.as_ref().and_then(|key| app.shown.borrow().iter().find(|s| &s.key == key).cloned());
+    let wanted = autostart
+        .as_ref()
+        .and_then(|key| app.shown.borrow().iter().find(|s| &s.key == key).cloned());
     match (&autostart, wanted) {
         (Some(key), None) => eprintln!("myna-captions: no source {key}"),
         (_, Some(node)) => app.start(&node),
@@ -228,16 +277,26 @@ impl App {
         }
         let picked = self.engine().map(|(_, socket)| socket);
         let names: Vec<&str> = found.iter().map(|(name, _)| name.as_str()).collect();
-        self.backend_row.set_model(Some(&gtk::StringList::new(&names)));
-        let index = picked.and_then(|p| found.iter().position(|(_, s)| *s == p)).unwrap_or(0);
+        self.backend_row
+            .set_model(Some(&gtk::StringList::new(&names)));
+        let index = picked
+            .and_then(|p| found.iter().position(|(_, s)| *s == p))
+            .unwrap_or(0);
         self.backend_row.set_selected(index as u32);
         self.backend_row.set_sensitive(!found.is_empty());
-        self.backend_row.set_subtitle(if found.is_empty() { "No Myna engine is running" } else { "" });
+        self.backend_row.set_subtitle(if found.is_empty() {
+            "No Myna engine is running"
+        } else {
+            ""
+        });
         self.backends.replace(found);
     }
 
     fn engine(&self) -> Option<(String, PathBuf)> {
-        self.backends.borrow().get(self.backend_row.selected() as usize).cloned()
+        self.backends
+            .borrow()
+            .get(self.backend_row.selected() as usize)
+            .cloned()
     }
 
     /// Rebuild the source list when the graph changed.
@@ -255,7 +314,11 @@ impl App {
         }
         self.list.remove_all();
         if sources.is_empty() {
-            self.list.append(&adw::ActionRow::builder().title("Nothing to caption").build());
+            self.list.append(
+                &adw::ActionRow::builder()
+                    .title("Nothing to caption")
+                    .build(),
+            );
         }
         for source in &sources {
             self.list.append(&self.row(source));
@@ -274,7 +337,12 @@ impl App {
             Kind::Mic => "audio-input-microphone-symbolic",
         }));
         if node.running && node.kind != Kind::Mic {
-            row.add_suffix(&gtk::Label::builder().label("Playing").css_classes(["dim-label", "caption"]).build());
+            row.add_suffix(
+                &gtk::Label::builder()
+                    .label("Playing")
+                    .css_classes(["dim-label", "caption"])
+                    .build(),
+            );
         }
         let toggle = gtk::ToggleButton::builder()
             .label("Caption")
@@ -282,18 +350,26 @@ impl App {
             .active(self.sessions.borrow().contains_key(&node.key))
             .build();
         let node = node.clone();
-        toggle.connect_toggled(glib::clone!(#[weak(rename_to = app)] self, move |toggle| {
-            if toggle.is_active() {
-                if !app.sessions.borrow().contains_key(&node.key) {
-                    app.start(&node);
-                }
-            } else {
-                let window = app.sessions.borrow().get(&node.key).map(|r| r.window.clone());
-                if let Some(window) = window {
-                    window.close();
+        toggle.connect_toggled(glib::clone!(
+            #[weak(rename_to = app)]
+            self,
+            move |toggle| {
+                if toggle.is_active() {
+                    if !app.sessions.borrow().contains_key(&node.key) {
+                        app.start(&node);
+                    }
+                } else {
+                    let window = app
+                        .sessions
+                        .borrow()
+                        .get(&node.key)
+                        .map(|r| r.window.clone());
+                    if let Some(window) = window {
+                        window.close();
+                    }
                 }
             }
-        }));
+        ));
         row.add_suffix(&toggle);
         row.set_activatable_widget(Some(&toggle));
         row
@@ -304,7 +380,11 @@ impl App {
             eprintln!("myna-captions: no backend to transcribe with");
             return;
         };
-        let application = self.list.root().and_downcast::<gtk::Window>().and_then(|w| w.application());
+        let application = self
+            .list
+            .root()
+            .and_downcast::<gtk::Window>()
+            .and_then(|w| w.application());
         let Some(application) = application.and_downcast::<adw::Application>() else {
             eprintln!("myna-captions: the picker has no application yet");
             return;
@@ -326,49 +406,75 @@ impl App {
         self.runtime.spawn(session::run(spec, events_tx, stop_rx));
 
         let key = node.key.clone();
-        window.connect_close_request(glib::clone!(#[weak(rename_to = app)] self, #[upgrade_or] glib::Propagation::Proceed, move |_| {
-            let removed = app.sessions.borrow_mut().remove(&key);
-            if let Some(mut running) = removed {
-                if let Some(stop) = running.stop.take() {
-                    let _ = stop.send(());
+        window.connect_close_request(glib::clone!(
+            #[weak(rename_to = app)]
+            self,
+            #[upgrade_or]
+            glib::Propagation::Proceed,
+            move |_| {
+                let removed = app.sessions.borrow_mut().remove(&key);
+                if let Some(mut running) = removed {
+                    if let Some(stop) = running.stop.take() {
+                        let _ = stop.send(());
+                    }
                 }
+                app.shown.borrow_mut().clear();
+                app.refresh();
+                glib::Propagation::Proceed
             }
-            app.shown.borrow_mut().clear();
-            app.refresh();
-            glib::Propagation::Proceed
-        }));
+        ));
 
         let revisions = self.revisions.clone();
-        glib::spawn_future_local(glib::clone!(#[weak] caption, async move {
-            let mut transcript = Transcript::default();
-            let trace = std::env::var_os("MYNA_CAPTIONS_TRACE").is_some();
-            let born = std::time::Instant::now();
-            while let Ok(event) = events_rx.recv().await {
-                if trace {
-                    eprintln!("[{:6.2}] {event:?}", born.elapsed().as_secs_f32());
-                }
-                match event {
-                    Event::Status(state) => {
-                        if transcript.is_empty() {
-                            let waiting = if state == "loading" { "Loading the speech model…" } else { "" };
-                            caption.set_text(waiting.to_owned(), 0);
+        glib::spawn_future_local(glib::clone!(
+            #[weak]
+            caption,
+            async move {
+                let mut transcript = Transcript::default();
+                let trace = std::env::var_os("MYNA_CAPTIONS_TRACE").is_some();
+                let born = std::time::Instant::now();
+                while let Ok(event) = events_rx.recv().await {
+                    if trace {
+                        eprintln!("[{:6.2}] {event:?}", born.elapsed().as_secs_f32());
+                    }
+                    match event {
+                        Event::Status(state) => {
+                            if transcript.is_empty() {
+                                let waiting = if state == "loading" {
+                                    "Loading the speech model…"
+                                } else {
+                                    ""
+                                };
+                                caption.set_text(waiting.to_owned(), 0);
+                            }
+                            continue;
                         }
-                        continue;
+                        Event::Delta {
+                            item,
+                            text,
+                            unstable,
+                        } => transcript.delta(&item, &text, unstable),
+                        Event::Completed { item, text } => transcript.completed(&item, &text),
+                        Event::Ended(None) => break,
+                        Event::Ended(Some(error)) => {
+                            caption.set_text(format!("Captions stopped: {error}"), 0);
+                            break;
+                        }
                     }
-                    Event::Delta { item, text, unstable } => transcript.delta(&item, &text, unstable),
-                    Event::Completed { item, text } => transcript.completed(&item, &text),
-                    Event::Ended(None) => break,
-                    Event::Ended(Some(error)) => {
-                        caption.set_text(format!("Captions stopped: {error}"), 0);
-                        break;
-                    }
+                    let (text, stable) = transcript.display(revisions.get());
+                    caption.set_text(text, stable);
                 }
-                let (text, stable) = transcript.display(revisions.get());
-                caption.set_text(text, stable);
             }
-        }));
+        ));
 
         window.present();
-        self.sessions.borrow_mut().insert(node.key.clone(), Running { stop: Some(stop_tx), window, caption, source: node.clone() });
+        self.sessions.borrow_mut().insert(
+            node.key.clone(),
+            Running {
+                stop: Some(stop_tx),
+                window,
+                caption,
+                source: node.clone(),
+            },
+        );
     }
 }

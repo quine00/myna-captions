@@ -49,20 +49,30 @@ pub fn parse(dump: &str) -> Vec<Node> {
         .filter(|o| o.get("type").and_then(Value::as_str) == Some("PipeWire:Interface:Client"))
         .filter_map(|o| {
             let props = o.get("info")?.get("props")?;
-            Some((o.get("id")?.as_u64()?, number(props, "application.process.id")?))
+            Some((
+                o.get("id")?.as_u64()?,
+                number(props, "application.process.id")?,
+            ))
         })
         .collect();
     objects.iter().filter_map(|o| node(o, &processes)).collect()
 }
 
 fn number(props: &Value, key: &str) -> Option<u64> {
-    props.get(key).and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
+    props
+        .get(key)
+        .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
 }
 
 fn node(object: &Value, processes: &std::collections::HashMap<u64, u64>) -> Option<Node> {
     let info = object.get("info")?;
     let props = info.get("props")?;
-    let prop = |k: &str| props.get(k).and_then(Value::as_str).filter(|s| !s.is_empty());
+    let prop = |k: &str| {
+        props
+            .get(k)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+    };
     let serial = number(props, "object.serial")?;
     let running = info.get("state").and_then(Value::as_str) == Some("running");
     let (kind, key, title, media) = match prop("media.class")? {
@@ -70,24 +80,48 @@ fn node(object: &Value, processes: &std::collections::HashMap<u64, u64>) -> Opti
             if prop("node.name") == Some("myna-captions") {
                 return None;
             }
-            let app = prop("application.name").or(prop("node.name")).unwrap_or("Unknown application");
+            let app = prop("application.name")
+                .or(prop("node.name"))
+                .unwrap_or("Unknown application");
             let process = number(props, "application.process.id")
                 .or_else(|| processes.get(&number(props, "client.id")?).copied())
                 .map(|p| p.to_string())
                 .unwrap_or_default();
-            (Kind::App, format!("app:{app}:{process}"), app, prop("media.name").unwrap_or(""))
+            (
+                Kind::App,
+                format!("app:{app}:{process}"),
+                app,
+                prop("media.name").unwrap_or(""),
+            )
         }
         "Audio/Sink" => {
             let name = prop("node.name")?;
-            (Kind::Sink, format!("sink:{name}"), prop("node.description").unwrap_or(name), "")
+            (
+                Kind::Sink,
+                format!("sink:{name}"),
+                prop("node.description").unwrap_or(name),
+                "",
+            )
         }
         "Audio/Source" => {
             let name = prop("node.name")?;
-            (Kind::Mic, format!("mic:{name}"), prop("node.description").unwrap_or(name), "")
+            (
+                Kind::Mic,
+                format!("mic:{name}"),
+                prop("node.description").unwrap_or(name),
+                "",
+            )
         }
         _ => return None,
     };
-    Some(Node { key, serial, kind, title: title.to_owned(), media: media.to_owned(), running })
+    Some(Node {
+        key,
+        serial,
+        kind,
+        title: title.to_owned(),
+        media: media.to_owned(),
+        running,
+    })
 }
 
 /// Group nodes into sources: one per application, device or microphone.
@@ -106,14 +140,22 @@ pub fn sources(nodes: &[Node]) -> Vec<Source> {
             Kind::Sink => "Everything playing on this output".into(),
             Kind::Mic => "Speech in the room".into(),
         };
-        out.push(Source { key: node.key.clone(), kind: node.kind.clone(), title: node.title.clone(), subtitle, running: node.running });
+        out.push(Source {
+            key: node.key.clone(),
+            kind: node.kind.clone(),
+            title: node.title.clone(),
+            subtitle,
+            running: node.running,
+        });
     }
     let rank = |k: &Kind| match k {
         Kind::App => 0,
         Kind::Mic => 1,
         Kind::Sink => 2,
     };
-    out.sort_by(|a, b| (rank(&a.kind), !a.running, &a.title).cmp(&(rank(&b.kind), !b.running, &b.title)));
+    out.sort_by(|a, b| {
+        (rank(&a.kind), !a.running, &a.title).cmp(&(rank(&b.kind), !b.running, &b.title))
+    });
     out
 }
 
@@ -151,14 +193,27 @@ mod tests {
     #[test]
     fn an_application_is_one_source_however_many_nodes() {
         let sources = sources(&parse(DUMP));
-        let titles: Vec<_> = sources.iter().map(|s| (s.title.as_str(), s.subtitle.as_str())).collect();
-        assert_eq!(titles, [("Firefox", "Meet"), ("Headset", "Speech in the room"), ("Speakers", "Everything playing on this output")]);
+        let titles: Vec<_> = sources
+            .iter()
+            .map(|s| (s.title.as_str(), s.subtitle.as_str()))
+            .collect();
+        assert_eq!(
+            titles,
+            [
+                ("Firefox", "Meet"),
+                ("Headset", "Speech in the room"),
+                ("Speakers", "Everything playing on this output")
+            ]
+        );
     }
 
     #[test]
     fn resolve_prefers_the_running_node() {
         let nodes = parse(DUMP);
-        assert_eq!(resolve(&nodes, "app:Firefox:42").map(|n| n.serial), Some(17));
+        assert_eq!(
+            resolve(&nodes, "app:Firefox:42").map(|n| n.serial),
+            Some(17)
+        );
         assert_eq!(resolve(&nodes, "app:Gone:1"), None);
     }
 

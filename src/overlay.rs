@@ -7,8 +7,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use gtk::prelude::*;
 use adw::prelude::AnimationExt;
+use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 use gtk::{gdk, glib, graphene, gsk, pango};
 
@@ -85,10 +85,16 @@ mod imp {
             let widget = self.obj();
             glib::timeout_add_local(
                 Duration::from_millis(250),
-                glib::clone!(#[weak] widget, #[upgrade_or] glib::ControlFlow::Break, move || {
-                    widget.fade_if_quiet();
-                    glib::ControlFlow::Continue
-                }),
+                glib::clone!(
+                    #[weak]
+                    widget,
+                    #[upgrade_or]
+                    glib::ControlFlow::Break,
+                    move || {
+                        widget.fade_if_quiet();
+                        glib::ControlFlow::Continue
+                    }
+                ),
             );
         }
     }
@@ -113,7 +119,11 @@ mod imp {
             snapshot.append_color(&style.background, &bounds);
 
             let text = self.text.borrow();
-            let (shown, stable) = if text.is_empty() { ("Listening…", 0) } else { (text.as_str(), self.stable.get()) };
+            let (shown, stable) = if text.is_empty() {
+                ("Listening…", 0)
+            } else {
+                (text.as_str(), self.stable.get())
+            };
             let layout = widget.create_pango_layout(Some(shown));
             layout.set_font_description(Some(&style.font));
             layout.set_width(((w - 2.0 * PAD_H).max(1.0) * pango::SCALE as f32) as i32);
@@ -123,7 +133,11 @@ mod imp {
                 let attrs = pango::AttrList::new();
                 let c = &style.tentative;
                 let scale = |v: f32| (v * 65535.0) as u16;
-                let mut color = pango::AttrColor::new_foreground(scale(c.red()), scale(c.green()), scale(c.blue()));
+                let mut color = pango::AttrColor::new_foreground(
+                    scale(c.red()),
+                    scale(c.green()),
+                    scale(c.blue()),
+                );
                 color.set_start_index(stable as u32);
                 color.set_end_index(shown.len() as u32);
                 attrs.insert(color);
@@ -139,7 +153,12 @@ mod imp {
             snapshot.push_clip(&graphene::Rect::new(0.0, top, w, visible));
             snapshot.save();
             snapshot.translate(&graphene::Point::new(PAD_H, top + visible - text_height));
-            snapshot.push_shadow(&[gsk::Shadow::new(gdk::RGBA::new(0.0, 0.0, 0.0, 0.8), 0.0, 1.5, 3.0)]);
+            snapshot.push_shadow(&[gsk::Shadow::new(
+                gdk::RGBA::new(0.0, 0.0, 0.0, 0.8),
+                0.0,
+                1.5,
+                3.0,
+            )]);
             snapshot.append_layout(&layout, &style.text);
             snapshot.pop();
             snapshot.restore();
@@ -178,14 +197,21 @@ impl Caption {
     /// when nobody is talking. New words bring it straight back.
     fn fade_if_quiet(&self) {
         let imp = self.imp();
-        if self.opacity() < 1.0 || imp.fade.borrow().is_some() || imp.changed.get().elapsed() < FADE_AFTER {
+        if self.opacity() < 1.0
+            || imp.fade.borrow().is_some()
+            || imp.changed.get().elapsed() < FADE_AFTER
+        {
             return;
         }
         let target = adw::PropertyAnimationTarget::new(self, "opacity");
         let fade = adw::TimedAnimation::new(self, 1.0, 0.0, 800, target);
-        fade.connect_done(glib::clone!(#[weak(rename_to = caption)] self, move |_| {
-            caption.imp().fade.take();
-        }));
+        fade.connect_done(glib::clone!(
+            #[weak(rename_to = caption)]
+            self,
+            move |_| {
+                caption.imp().fade.take();
+            }
+        ));
         fade.play();
         imp.fade.replace(Some(fade));
     }
@@ -245,7 +271,11 @@ pub fn install_css() {
 /// The overlay window around `caption`, and its handle: a pill naming the
 /// source, the one part that always takes the pointer, so the rest can let
 /// clicks through.
-pub fn window(app: &adw::Application, title: &str, caption: &Caption) -> (gtk::Window, gtk::Widget, Rc<Reveal>) {
+pub fn window(
+    app: &adw::Application,
+    title: &str,
+    caption: &Caption,
+) -> (gtk::Window, gtk::Widget, Rc<Reveal>) {
     let source = gtk::Box::builder()
         .spacing(6)
         .css_classes(["osd", "handle"])
@@ -273,7 +303,11 @@ pub fn window(app: &adw::Application, title: &str, caption: &Caption) -> (gtk::W
         .margin_top(HANDLE_STRIP + 6)
         .margin_end(6)
         .build();
-    close.connect_clicked(glib::clone!(#[weak] window, move |_| window.close()));
+    close.connect_clicked(glib::clone!(
+        #[weak]
+        window,
+        move |_| window.close()
+    ));
 
     let grip = gtk::Box::builder()
         .css_classes(["grip", "chrome"])
@@ -282,21 +316,33 @@ pub fn window(app: &adw::Application, title: &str, caption: &Caption) -> (gtk::W
         .cursor(&gdk::Cursor::from_name("se-resize", None).expect("cursor"))
         .build();
     let press = gtk::GestureClick::new();
-    press.connect_pressed(glib::clone!(#[weak] window, #[weak] grip, move |gesture, _, x, y| {
-        let Some(toplevel) = window.surface().and_downcast::<gdk::Toplevel>() else { return };
-        let Some(point) = grip.compute_point(&window, &graphene::Point::new(x as f32, y as f32)) else { return };
-        if let Some(device) = gesture.device() {
-            toplevel.begin_resize(
-                gdk::SurfaceEdge::SouthEast,
-                Some(&device),
-                gesture.current_button() as i32,
-                point.x() as f64,
-                point.y() as f64,
-                gesture.current_event_time(),
-            );
+    press.connect_pressed(glib::clone!(
+        #[weak]
+        window,
+        #[weak]
+        grip,
+        move |gesture, _, x, y| {
+            let Some(toplevel) = window.surface().and_downcast::<gdk::Toplevel>() else {
+                return;
+            };
+            let Some(point) =
+                grip.compute_point(&window, &graphene::Point::new(x as f32, y as f32))
+            else {
+                return;
+            };
+            if let Some(device) = gesture.device() {
+                toplevel.begin_resize(
+                    gdk::SurfaceEdge::SouthEast,
+                    Some(&device),
+                    gesture.current_button() as i32,
+                    point.x() as f64,
+                    point.y() as f64,
+                    gesture.current_event_time(),
+                );
+            }
+            gesture.set_state(gtk::EventSequenceState::Claimed);
         }
-        gesture.set_state(gtk::EventSequenceState::Claimed);
-    }));
+    ));
     grip.add_controller(press);
 
     // The handle sits in a clear strip above the caption box, never on the
@@ -347,19 +393,40 @@ impl Reveal {
             listeners: RefCell::default(),
         });
         let motion = gtk::EventControllerMotion::new();
-        motion.connect_enter(glib::clone!(#[weak] reveal, move |_, _, _| reveal.pointer(true)));
-        motion.connect_motion(glib::clone!(#[weak] reveal, move |_, _, _| reveal.pointer(true)));
-        motion.connect_leave(glib::clone!(#[weak] reveal, move |_| reveal.pointer(false)));
+        motion.connect_enter(glib::clone!(
+            #[weak]
+            reveal,
+            move |_, _, _| reveal.pointer(true)
+        ));
+        motion.connect_motion(glib::clone!(
+            #[weak]
+            reveal,
+            move |_, _, _| reveal.pointer(true)
+        ));
+        motion.connect_leave(glib::clone!(
+            #[weak]
+            reveal,
+            move |_| reveal.pointer(false)
+        ));
         window.add_controller(motion);
         // Capture phase: the drag gesture claims the press.
         let press = gtk::EventControllerLegacy::new();
         press.set_propagation_phase(gtk::PropagationPhase::Capture);
-        press.connect_event(glib::clone!(#[weak] reveal, #[upgrade_or] glib::Propagation::Proceed, move |_, event| {
-            if matches!(event.event_type(), gdk::EventType::ButtonPress | gdk::EventType::ButtonRelease) {
-                reveal.hold();
+        press.connect_event(glib::clone!(
+            #[weak]
+            reveal,
+            #[upgrade_or]
+            glib::Propagation::Proceed,
+            move |_, event| {
+                if matches!(
+                    event.event_type(),
+                    gdk::EventType::ButtonPress | gdk::EventType::ButtonRelease
+                ) {
+                    reveal.hold();
+                }
+                glib::Propagation::Proceed
             }
-            glib::Propagation::Proceed
-        }));
+        ));
         handle.add_controller(press);
         reveal
     }
@@ -388,7 +455,11 @@ impl Reveal {
 
     fn conceal_later(self: &Rc<Self>) {
         self.cancel();
-        let wait = self.hold_until.get().saturating_duration_since(Instant::now()).max(LINGER);
+        let wait = self
+            .hold_until
+            .get()
+            .saturating_duration_since(Instant::now())
+            .max(LINGER);
         let weak = Rc::downgrade(self);
         let id = glib::timeout_add_local_once(wait, move || {
             let Some(reveal) = weak.upgrade() else { return };
@@ -412,7 +483,11 @@ impl Reveal {
         }
         self.shown.set(shown);
         if let Some(window) = self.window.upgrade() {
-            if shown { window.add_css_class("revealed") } else { window.remove_css_class("revealed") }
+            if shown {
+                window.add_css_class("revealed")
+            } else {
+                window.remove_css_class("revealed")
+            }
         }
         for f in self.listeners.borrow().iter() {
             f(shown);

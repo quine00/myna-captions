@@ -30,8 +30,15 @@ const FOLLOW_POLL: Duration = Duration::from_secs(1);
 #[derive(Debug)]
 pub enum Event {
     Status(String),
-    Delta { item: String, text: String, unstable: bool },
-    Completed { item: String, text: String },
+    Delta {
+        item: String,
+        text: String,
+        unstable: bool,
+    },
+    Completed {
+        item: String,
+        text: String,
+    },
     /// The session is over; `None` when it ended cleanly.
     Ended(Option<String>),
 }
@@ -43,8 +50,16 @@ pub struct Spec {
 }
 
 /// Run the session until `stop` fires or the backend goes away.
-pub async fn run(spec: Spec, events: async_channel::Sender<Event>, stop: tokio::sync::oneshot::Receiver<()>) {
-    eprintln!("myna-captions: captioning {} through {}", spec.key, spec.socket.display());
+pub async fn run(
+    spec: Spec,
+    events: async_channel::Sender<Event>,
+    stop: tokio::sync::oneshot::Receiver<()>,
+) {
+    eprintln!(
+        "myna-captions: captioning {} through {}",
+        spec.key,
+        spec.socket.display()
+    );
     let result = stream(&spec, &events, stop).await;
     match &result {
         Ok(()) => eprintln!("myna-captions: {} finished", spec.key),
@@ -65,9 +80,11 @@ async fn stream(
         .await
         .map_err(|e| format!("handshake: {e}"))?;
     let (mut tx, mut rx) = ws.split();
-    tx.send(Message::text(session_update(spec.language.as_deref()).to_string()))
-        .await
-        .map_err(|e| e.to_string())?;
+    tx.send(Message::text(
+        session_update(spec.language.as_deref()).to_string(),
+    ))
+    .await
+    .map_err(|e| e.to_string())?;
 
     let (pcm_tx, mut pcm) = mpsc::channel::<Vec<u8>>(64);
     let capture = tokio::spawn(follow(spec.key.clone(), pcm_tx));
@@ -123,7 +140,9 @@ async fn follow(key: String, pcm: mpsc::Sender<Vec<u8>>) {
             tokio::time::sleep(FOLLOW_POLL).await;
             continue;
         };
-        let Some(mut out) = recorder.stdout.take() else { continue };
+        let Some(mut out) = recorder.stdout.take() else {
+            continue;
+        };
         let mut buf = vec![0u8; CHUNK_BYTES];
         loop {
             match out.read(&mut buf).await {
@@ -144,9 +163,23 @@ fn record(serial: u64, kind: &Kind) -> Result<tokio::process::Child, String> {
     let mut command = Command::new("pw-record");
     command
         .args(["--target", &serial.to_string()])
-        .args(["--rate", &SAMPLE_RATE.to_string(), "--channels", "1", "--format", "s16"])
-        .args(["--media-category", "Capture", "--media-role", "Accessibility"]);
-    let mut props = String::from("{ node.dont-reconnect=true node.name=myna-captions node.description=\"Myna Captions\"");
+        .args([
+            "--rate",
+            &SAMPLE_RATE.to_string(),
+            "--channels",
+            "1",
+            "--format",
+            "s16",
+        ])
+        .args([
+            "--media-category",
+            "Capture",
+            "--media-role",
+            "Accessibility",
+        ]);
+    let mut props = String::from(
+        "{ node.dont-reconnect=true node.name=myna-captions node.description=\"Myna Captions\"",
+    );
     if *kind == Kind::Sink {
         props.push_str(" stream.capture.sink=true");
     }
@@ -185,14 +218,21 @@ where
     S: futures_util::Sink<Message> + Unpin,
     S::Error: std::fmt::Display,
 {
-    tx.send(Message::text(json!({ "type": "input_audio_buffer.commit" }).to_string()))
-        .await
-        .map_err(|e| e.to_string())
+    tx.send(Message::text(
+        json!({ "type": "input_audio_buffer.commit" }).to_string(),
+    ))
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// Forward one server frame. `Some(true)` marks an item's terminal.
-async fn dispatch(text: &str, events: &async_channel::Sender<Event>) -> Result<Option<bool>, String> {
-    let Some(event) = parse(text)? else { return Ok(None) };
+async fn dispatch(
+    text: &str,
+    events: &async_channel::Sender<Event>,
+) -> Result<Option<bool>, String> {
+    let Some(event) = parse(text)? else {
+        return Ok(None);
+    };
     let terminal = matches!(event, Event::Completed { .. });
     let _ = events.send(event).await;
     Ok(Some(terminal))
@@ -200,7 +240,13 @@ async fn dispatch(text: &str, events: &async_channel::Sender<Event>) -> Result<O
 
 fn parse(text: &str) -> Result<Option<Event>, String> {
     let frame: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
-    let str_of = |k: &str| frame.get(k).and_then(Value::as_str).unwrap_or_default().to_owned();
+    let str_of = |k: &str| {
+        frame
+            .get(k)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
     Ok(match frame.get("type").and_then(Value::as_str) {
         Some("status") => Some(Event::Status(str_of("state"))),
         Some("conversation.item.input_audio_transcription.delta") => Some(Event::Delta {
@@ -229,7 +275,9 @@ fn parse(text: &str) -> Result<Option<Event>, String> {
 /// optional `NAME.label`), then the installed Myna backend snaps.
 pub fn backends() -> Vec<(String, PathBuf)> {
     let mut found = Vec::new();
-    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").map(|d| PathBuf::from(d).join("myna-captions")) {
+    if let Some(dir) =
+        std::env::var_os("XDG_RUNTIME_DIR").map(|d| PathBuf::from(d).join("myna-captions"))
+    {
         let mut local: Vec<(String, PathBuf)> = std::fs::read_dir(&dir)
             .into_iter()
             .flatten()
@@ -239,7 +287,13 @@ pub fn backends() -> Vec<(String, PathBuf)> {
             .map(|socket| {
                 let label = std::fs::read_to_string(socket.with_extension("label"))
                     .map(|l| l.trim().to_owned())
-                    .unwrap_or_else(|_| socket.file_stem().unwrap_or_default().to_string_lossy().into_owned());
+                    .unwrap_or_else(|_| {
+                        socket
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned()
+                    });
                 (label, socket)
             })
             .collect();
@@ -252,7 +306,9 @@ pub fn backends() -> Vec<(String, PathBuf)> {
         .flatten()
         .filter_map(|dir| {
             let socket = dir.path().join("common/share/provider/myna.sock");
-            socket.exists().then(|| (dir.file_name().to_string_lossy().into_owned(), socket))
+            socket
+                .exists()
+                .then(|| (dir.file_name().to_string_lossy().into_owned(), socket))
         })
         .collect();
     // Parakeet is the one snap that streams out of the box; the others
@@ -268,14 +324,27 @@ mod tests {
 
     #[test]
     fn parses_an_unstable_delta() {
-        let event = parse(r#"{"type":"conversation.item.input_audio_transcription.delta","item_id":"i1","delta":"Hi","disposition":"unstable"}"#);
-        assert!(matches!(event, Ok(Some(Event::Delta { unstable: true, .. }))));
+        let event = parse(
+            r#"{"type":"conversation.item.input_audio_transcription.delta","item_id":"i1","delta":"Hi","disposition":"unstable"}"#,
+        );
+        assert!(matches!(
+            event,
+            Ok(Some(Event::Delta { unstable: true, .. }))
+        ));
     }
 
     #[test]
     fn a_delta_without_disposition_is_committed() {
-        let event = parse(r#"{"type":"conversation.item.input_audio_transcription.delta","item_id":"i1","delta":"Hi"}"#);
-        assert!(matches!(event, Ok(Some(Event::Delta { unstable: false, .. }))));
+        let event = parse(
+            r#"{"type":"conversation.item.input_audio_transcription.delta","item_id":"i1","delta":"Hi"}"#,
+        );
+        assert!(matches!(
+            event,
+            Ok(Some(Event::Delta {
+                unstable: false,
+                ..
+            }))
+        ));
     }
 
     #[test]
@@ -286,7 +355,12 @@ mod tests {
 
     #[test]
     fn language_rides_in_transcription() {
-        assert_eq!(session_update(Some("fr"))["session"]["audio"]["input"]["transcription"]["language"], "fr");
-        assert!(session_update(None)["session"]["audio"]["input"].get("transcription").is_none());
+        assert_eq!(
+            session_update(Some("fr"))["session"]["audio"]["input"]["transcription"]["language"],
+            "fr"
+        );
+        assert!(session_update(None)["session"]["audio"]["input"]
+            .get("transcription")
+            .is_none());
     }
 }

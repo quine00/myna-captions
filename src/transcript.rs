@@ -38,7 +38,11 @@ impl Transcript {
         if unstable {
             self.previous = std::mem::replace(&mut self.tentative, text.trim().to_owned());
         } else {
-            self.item.push_str(if self.item.is_empty() { text.trim_start() } else { text });
+            self.item.push_str(if self.item.is_empty() {
+                text.trim_start()
+            } else {
+                text
+            });
             self.tentative.clear();
             self.previous.clear();
         }
@@ -67,7 +71,9 @@ impl Transcript {
         if self.committed.len() > KEEP_CHARS {
             let cut = self.committed.len() - KEEP_CHARS;
             let cut = (cut..self.committed.len())
-                .find(|&i| self.committed.is_char_boundary(i) && self.committed[i..].starts_with(' '))
+                .find(|&i| {
+                    self.committed.is_char_boundary(i) && self.committed[i..].starts_with(' ')
+                })
                 .unwrap_or(cut);
             self.committed.drain(..cut);
             self.committed = self.committed.trim_start().to_owned();
@@ -121,7 +127,10 @@ mod tests {
         let mut t = Transcript::default();
         t.delta("a", "We've also", true);
         t.delta("a", "We have also implemented", true);
-        assert_eq!(t.display(Revisions::Draft), ("We have also implemented".into(), 0));
+        assert_eq!(
+            t.display(Revisions::Draft),
+            ("We have also implemented".into(), 0)
+        );
     }
 
     #[test]
@@ -130,7 +139,10 @@ mod tests {
         t.delta("a", "hello", true);
         t.completed("a", "Hello there.");
         t.delta("b", "General", true);
-        assert_eq!(t.display(Revisions::Draft), ("Hello there. General".into(), 12));
+        assert_eq!(
+            t.display(Revisions::Draft),
+            ("Hello there. General".into(), 12)
+        );
     }
 
     #[test]
@@ -145,10 +157,21 @@ mod tests {
     #[test]
     fn committed_pieces_join_without_invented_spaces() {
         let mut t = Transcript::default();
-        for piece in ["Bring", " hundreds", " of thousand", "s", " of", " flav", "or."] {
+        for piece in [
+            "Bring",
+            " hundreds",
+            " of thousand",
+            "s",
+            " of",
+            " flav",
+            "or.",
+        ] {
             t.delta("a", piece, false);
         }
-        assert_eq!(t.display(Revisions::Draft).0, "Bring hundreds of thousands of flavor.");
+        assert_eq!(
+            t.display(Revisions::Draft).0,
+            "Bring hundreds of thousands of flavor."
+        );
     }
 
     #[test]
