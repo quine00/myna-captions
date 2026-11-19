@@ -2,12 +2,13 @@
 
 What the 2026-11-01/02 prototype established, what it copied out of Myna (the
 seed of a reusable library), and the questions still to settle. The parked
-2026-08-25 design (`~/captioning-client.md`) is the earlier thinking; where it
-conflicts with this file, this file has been measured.
+2026-08-25 design (a private note, not in this repository) is the earlier
+thinking; where it conflicts with this file, this file has been measured.
 
 ## Resume here (2026-11-02)
 
-Where things are:
+Where things are (the paths outside this repository are on the machine the
+prototype was built on, and unpublished):
 
 - This repo: the app (Rust, GTK4). `dev/serve-methods.sh` serves the
   engines; `dev/fake_engine.py` is a scripted engine for UI work;
@@ -30,10 +31,10 @@ Open, in order:
    window-handle move did nothing under Mutter/XWayland; the pill now
    configures the window itself. Run with `MYNA_CAPTIONS_TRACE=1` and read
    the `overlay` lines if it still does not move.
-2. **Productise the method:** port Nemotron (English and 3.5) to int8 ONNX
-   with a torch-free loop as a Myna adapter, then the wire work decided in
-   the grilling (intent and bounds, methods advertised in
-   `session.created`).
+2. **Productise the method:** the int8 ONNX, torch-free Nemotron adapter
+   (English and 3.5) has since shipped as the `myna-nemotron` snap. Still
+   open: the wire work decided in the grilling (intent and bounds, methods
+   advertised in `session.created`).
 3. **Sparse punctuation** on conversational English.
 4. **The library** (table below), the GNOME Shell renderer (decided,
    deferred while XWayland suffices), and Kyutai again via its Rust runtime.

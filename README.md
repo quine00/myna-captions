@@ -9,21 +9,20 @@ Prototype. `FINDINGS.md` has what it taught us and the decisions so far.
 
 ## Trying it
 
-Needs PipeWire (`pw-dump`, `pw-record`) and at least one engine.
+Needs Ubuntu 26.04 or later (GTK 4.14, libadwaita 1.6), PipeWire and at
+least one Myna engine snap.
 
 ```shell
-# Engines: the caption methods under evaluation, one socket each. Needs a
-# Myna checkout on the captions-live branch (MYNA_TREE); NeMo and torch go
-# into their own venv under ~/.cache/myna on first run.
-dev/serve-methods.sh                     # every method
-dev/serve-methods.sh nemotron-1120       # just one
-
+sudo apt install cargo pkg-config libgtk-4-dev libadwaita-1-dev pipewire-bin
+sudo snap install myna-nemotron --edge   # fetches its English model too
 cargo run --release
 ```
 
-Installed Myna snaps (`myna-parakeet` and friends) are listed as engines too,
-after the locally served methods. They run Myna's dictation loop, which is
-the slow baseline for captions (see `FINDINGS.md`).
+Every installed Myna engine snap is listed as a method. `myna-nemotron` comes
+first: it commits each word about half a second after it is spoken and never
+rewrites one. `myna-parakeet` runs Myna's dictation loop, which commits at
+pauses and is the slow baseline for captions; the other snaps answer only
+when the audio ends (see `FINDINGS.md`).
 
 - Pick a **method** in the Engine group, then press **Caption** on a source.
   An application is followed across tabs and tracks; the caption stays up
@@ -41,3 +40,16 @@ Flags:
 - `--socket PATH` lists one more engine first.
 - `--caption KEY` starts captioning a source at launch (`app:NAME:PID`,
   `sink:NODE`, `mic:NODE`; `MYNA_CAPTIONS_TRACE=1` prints every wire event).
+
+## Developing
+
+`cargo fmt --check`, `cargo clippy --all-targets` and `cargo test` are
+expected to stay clean.
+
+- `dev/fake_engine.py` is a scripted engine for overlay work without a model.
+- `dev/serve-methods.sh` serves the experimental methods compared in
+  `FINDINGS.md`, one socket each under `$XDG_RUNTIME_DIR/myna-captions/`,
+  where the app lists them ahead of the snaps. It needs a Myna checkout with
+  the unpublished `captions-live` branch and locally exported models.
+- `dev/nested-drag.sh` runs the overlay in a nested GNOME Shell through
+  Myna's `dev/nested-session.sh`.
